@@ -3,7 +3,7 @@
 [![License: AGPL v3](https://img.shields.io/badge/License-AGPL_v3-blue.svg)](https://www.gnu.org/licenses/agpl-3.0)
 [![AstrBot Plugin](https://img.shields.io/badge/AstrBot-Plugin-blue)](https://github.com/Soulter/AstrBot)
 
-> 当前文档对应插件版本：`2.2.11`
+> 当前文档对应插件版本：`2.3.0`
 
 AngelHeart 是一个专为 [AstrBot](https://github.com/Soulter/AstrBot) 平台设计的智能群聊/私聊交互插件。它采用**前台 / 秘书 / 助理**三角色协作与**两态群聊参与模型**，在需要时回复，在不该打扰时保持安静。
 
@@ -28,6 +28,25 @@ AngelHeart 不是“一个 AI 自己判断再自己说话”，而是三个各�
 - **前台**不参与对话，只负责记账和调度。
 - **秘书**用低成本模型做判断，快进快出；决定“不接话”就结束了，助理不会醒来。
 - **助理**只在秘书放行后才生成高质量回复。
+
+### 秘书的决策后端：轻量模型 / Jev 决策模型
+
+秘书判断“该不该接话”可以用两种后端，在插件配置页的**秘书决策方式**里下拉选择：
+
+| 方式 | 做什么 | 适合 |
+|------|--------|------|
+| `llm`（默认） | 轻量秘书模型读完整对话，产出完整决策（回复与否 + 策略 + 话题 + 实体） | 想要丰富上下文判断 |
+| `jev` | 只用 [Jev 决策模型](https://jevmodel.org/zh/docs/) 做类型化判断，不调用大模型 | 只想要快、省 token |
+| `hybrid` | 先用 Jev 廉价门控，通过后才调用秘书模型产出策略 | 兼顾成本与策略质量 |
+
+Jev 是托管的**决策模型**：输入一段对话和一组类型化问题，返回 choice / score / noul 三种结构化答案，不生成文本。所以 Jev 路径能给出「要不要接话」「是否被追问」「话题有没有价值」「回复策略」，但给不出话题、实体、事实这些自由文本（话题用最新一条消息近似）。
+
+- **只对输入 token 计费**，输出免费；单次调用通常 2–4 秒。
+- 两个网关请求体完全一致，切换只需改接口地址并换上对应网关的 Key：默认 `https://jevmodel.org`（控制台自助创建 `sk-` 开头的 Key，登录即送 10 万免费输入 token），也可换成 `https://api.typesafe.ai`。
+- 开关与参数在插件配置页的**Jev 决策**分组：`enabled` 总开关、`api_key`、`base_url`、`model`、`timeout_sec`、`retries` 与三个概率阈值。
+- Jev 判定为「不回复」或调用失败时，本轮降级为不接话，不影响群聊。
+
+细节见 [docs/architecture/jev_decision_backend.md](docs/architecture/jev_decision_backend.md)。
 
 ### 两态群聊参与模型
 
@@ -131,6 +150,8 @@ AngelHeart 不是“一个 AI 自己判断再自己说话”，而是三个各�
    - 将插件克隆或下载到 AstrBot 的 plugins 目录
 
 安装后在插件配置里指定秘书模型（`analyzer_model`），并按需要打开群聊上下文接管。详细机制见 [docs/angelheart_workflow.md](docs/angelheart_workflow.md)。
+
+想让秘书改用 Jev 决策模型，就把「秘书决策方式」切到 `jev` 或 `hybrid`，并在「Jev 决策」分组里填好接口地址与 API Key；不填也能用，切回 `llm` 即可回到原来的行为。
 
 ## 贡献指南
 

@@ -1,5 +1,20 @@
 # Changelog
 
+## 未发布
+
+### Added
+- **秘书决策后端可切换到 Jev 决策模型**：插件配置页新增「秘书决策方式」下拉（`llm` / `jev` / `hybrid`）。`jev` 只用 [Jev 决策模型](https://jevmodel.org/zh/docs/) 做类型化判断（是否接话 / 是否被追问 / 话题价值 / 回复策略），不调用大模型；`hybrid` 先用 Jev 廉价门控，通过后才调用秘书模型产出策略，省 token。未配置 Jev 时自动回落到轻量秘书模型，行为与原来一致。`core/jev_decider.py`、`core/jev_transport.py`、`roles/secretary.py`、`core/config_manager.py`。
+- **Jev 决策配置分组**：插件配置页新增「Jev 决策」分组（开关、接口地址、API Key、模型名、超时、重试次数与三个概率阈值）。两个网关请求体一致，切换只需改接口地址并换上对应网关的 Key；默认网关取 `https://jevmodel.org`（`api.typesafe.ai` 在部分区域返回 451）。`_conf_schema.json`。
+- **可视化配置支持枚举下拉**：自带 WebUI 的 `SchemaForm.vue` 增加 `options` 渲染分支，展示文本取 `labels`、选项说明取 `subtitles`（与 AstrBot 原生配置页一致），并重建 `pages/chat-config/` 产物。`webui/src/SchemaForm.vue`、`webui/src/schema.ts`。
+- 补测试：Jev 状态拼装与裁剪、限额预检、概率映射与正向条件、三条决策分支、可视化配置可选性与取值校验（`tests/test_jev_decision_backend.py`）。
+
+### Performance
+- **历史上下文格式化提速 7.4 倍**：`LLMAnalyzer._format_conversation_history` 原先在循环体内逐条消息调 `for_chat()` 取昵称（最多 50 次），每���次都要重新解析群模板绑定；昵称与整段历史无关，提到循环外只取一次。50 条历史的格式化耗时 610 µs → 82 µs。`core/llm_analyzer.py`。
+- **绝对时间格式化加分钟级缓存**：输出本就精确到分钟，同一分钟内的消息共用一份结果；顺带去掉多余的 `astimezone()`（`fromtimestamp` 得到的已经是当地时间）。`core/utils/time_utils.py`。
+- **群模板覆盖值加缓存**：`ChatProfileStore.resolve_override` 原先每次读取都重建过滤后的配置字典，现在按模板缓存；模板更新 / 删除 / 绑定变更时统一失效。`ConfigManager` 视图内再缓存一次解析结果——一次决策要读十几个分组字段，逐个解析绑定是重复劳动。`core/chat_profile.py`、`core/config_manager.py`。
+- **Jev 传输层提速 1.76 倍**：去掉请求准备阶段对 state 与问题的深拷贝（传输层全程只读，state 可达百万字符），请求体只序列化一次并同时用于缓存键、字节计数与实际请求（线上字节不变）。结果对象原先每次深拷贝两遍（缓存一份、返回一份），现在只拷一次。预检只在「有可能超限」时才去算精确序列化长度。`core/jev_transport.py`。
+- 补测试：时间格式化与原始实现逐字一致、模板更新 / 绑定变更 / 模板删除后缓存正确失效、视图内缓存结果一致、超限仍被拦下（`tests/test_jev_decision_backend.py`）。
+
 ## 2.2.10 - 2026-10-26
 
 ### Fixed

@@ -1,0 +1,835 @@
+"""
+钉死 Jev 决策后端：状态拼装、限额预检、概率映射、秘书调度分支与可视化配置。
+
+覆盖：
+- build_state：当前消息在前、历史在后、超长裁剪；
+- build_questions：问题集合落在 Jev 文档的限额内（≤8 题、instructions ≤1800、criteria ≤2000）；
+- build_decision：概率 → 布尔、正向条件规则、策略映射；
+- JevDecider.decide：成功路径与失败降级；
+- Secretary.perform_analysis：llm / jev / hybrid 三条分支；
+- _conf_schema.json 与 web_api：决策方式可下拉选择且取值受 options 约束。
+"""
+
+from __future__ import annotations
+
+import json
+import tempfile
+from pathlib import Path
+from unittest.mock import AsyncMock, MagicMock
+
+import pytest
+
+PLUGIN_ROOT = Path(__file__).resolve().parent.parent
+
+
+def make_msg(name: str, text: str, ts: float = 0.0) -> dict:
+    """构造一条最小消息字典。"""
+    return {
+        "role": "user",
+        "content": text,
+        "sender_name": name,
+        "sender_id": name,
+        "timestamp": ts,
+    }
+
+
+def make_config(backend: str = "llm", jev_enabled: bool = True, **jev_overrides) -> "object":
+    """构造带 Jev 配置的 ConfigManager。"""
+    from astrbot_plugin_angel_heart.core.config_manager import ConfigManager
+
+    jev = {
+        "enabled": jev_enabled,
+        "api_key": "sk-test",
+        "base_url": "https://jevmodel.org",
+        "model": "jev-latest",
+        "timeout_sec": 8.0,
+        "retries": 1,
+        "reply_threshold": 0.6,
+        "questioned_threshold": 0.5,
+        "interesting_threshold": 0.5,
+        "max_state_chars": 1200,
+        "history_rounds": 4,
+    }
+    jev.update(jev_overrides)
+    return ConfigManager(
+        {
+            "analyzer_model": "mock-model",
+            "decision_backend": backend,
+            "jev_decision": jev,
+            "wake_interaction": {
+                "force_reply_when_summoned": True,
+                "reply_even_not_questioned": True,
+                "alias": "fairy",
+            },
+            "timing": {},
+            "leave_reply": {},
+            "access_control": {},
+            "context_compression": {},
+            "output_rewrite": {},
+        }
+    )
+
+
+def ready_answers(reply=0.9, questioned=0.8, interesting=0.3, strategy="answer_question"):
+    """构造一组 Jev 就绪答案。"""
+    return {
+        "should_reply": {"type": "noul", "noul": reply},
+        "is_questioned": {"type": "noul", "noul": questioned},
+        "is_interesting": {"type": "noul", "noul": interesting},
+        "reply_strategy": {"type": "choice", "choice": strategy},
+    }
+
+
+def _run_in_app(coro_factory, payload=None):
+    """在 Quart 应用上下文里跑 web_api 的协程（jsonify 需要 app context）。
+
+    web_api 的 _ok/_err 返回 Quart Response，这里统一还原成 dict。
+    """
+    import asyncio
+    import inspect
+
+    from quart import Quart
+
+    import astrbot_plugin_angel_heart.web_api as web_api_mod
+
+    app = Quart(__name__)
+
+    async def _maybe_await(value):
+        if inspect.isawaitable(value):
+            return await value
+        return value
+
+    async def _as_dict(response):
+        getter = getattr(response, "get_json", None)
+        if getter is None:
+            return response
+        data = getter()
+        if inspect.isawaitable(data):
+            data = await data
+        return data
+
+    async def _main():
+        if payload is not None:
+            async def _get_json():
+                return payload
+
+            old = web_api_mod._get_json
+            web_api_mod._get_json = _get_json
+            try:
+                return await _as_dict(await _maybe_await(coro_factory()))
+            finally:
+                web_api_mod._get_json = old
+        return await _as_dict(await _maybe_await(coro_factory()))
+
+    async def _wrapped():
+        async with app.app_context():
+            return await _main()
+
+    return asyncio.run(_wrapped())
+
+
+class TestBuildState:
+    """state 拼装：当前消息在前，历史在后。"""
+
+    def test_current_message_before_history(self):
+        from astrbot_plugin_angel_heart.core.jev_decider import build_state
+
+        state = build_state([make_msg("A", "新消息")], [make_msg("B", "旧消息")])
+        assert state.index("新消息") < state.index("旧消息")
+
+    def test_empty_dialogue_returns_empty(self):
+        from astrbot_plugin_angel_heart.core.jev_decider import build_state
+
+        assert build_state([]) == ""
+
+    def test_truncation_keeps_current_message(self):
+        from astrbot_plugin_angel_heart.core.jev_decider import build_state
+
+        long_text = "X" * 3000
+        state = build_state(
+            [make_msg("A", "当前消息")],
+            [make_msg("B", long_text)],
+            max_chars=400,
+        )
+        assert "当前消息" in state
+        assert len(state) <= 400
+
+    def test_history_is_appended_when_provided(self):
+        from astrbot_plugin_angel_heart.core.jev_decider import build_state
+
+        state = build_state(
+            [make_msg("A", "新消息")], [make_msg("B", "旧消息")], alias="fairy"
+        )
+        assert "新消息" in state and "旧消息" in state
+
+    def test_history_rounds_limits_carried_history(self):
+        from astrbot_plugin_angel_heart.core.jev_decider import build_state
+
+        history = [make_msg("H", f"历史{i}") for i in range(10)]
+        state = build_state(
+            [make_msg("A", "当前")], history, max_chars=5000, history_rounds=2
+        )
+        assert "历史9" in state
+        assert "历史0" not in state
+
+    def test_blank_message_is_skipped(self):
+        """没有正文的消息不进 state（避免 '[None]' 占位噪声）。"""
+        from astrbot_plugin_angel_heart.core.jev_decider import build_state
+
+        assert build_state([make_msg("A", "   ")], []) == ""
+
+
+class TestQuestionsWithinDocumentedLimits:
+    """问题集合必须落在 Jev 文档的校验上限内，否则会被 422 拒绝。"""
+
+    def test_question_count_within_limit(self):
+        from astrbot_plugin_angel_heart.core.jev_decider import build_questions
+
+        questions = build_questions()
+        assert len(questions) == 4
+        assert len(questions) <= 8
+
+    def test_local_validator_accepts_questions(self):
+        from astrbot_plugin_angel_heart.core.jev_decider import build_questions
+        from astrbot_plugin_angel_heart.core.jev_transport import validate_request
+
+        assert validate_request("some state", build_questions()) == []
+
+    def test_instructions_and_criteria_within_limits(self):
+        from astrbot_plugin_angel_heart.core.jev_decider import build_questions
+
+        for name, question in build_questions().items():
+            assert len(question["instructions"]) <= 1800, name
+            assert question.get("type") in ("noul", "choice", "score")
+            if "criteria" in question:
+                assert len(json.dumps(question["criteria"], ensure_ascii=False)) <= 2000, name
+
+    def test_question_names_are_identifiers(self):
+        from astrbot_plugin_angel_heart.core.jev_decider import build_questions
+
+        for name in build_questions():
+            assert name.replace("_", "").isalnum()
+            assert len(name) <= 64
+
+    def test_instructions_are_english(self):
+        """Jev 主训练语言是英文，问题指令不应混入中文。"""
+        from astrbot_plugin_angel_heart.core.jev_decider import build_questions
+
+        for name, question in build_questions().items():
+            assert question["instructions"].isascii(), name
+
+    def test_strategy_has_five_options(self):
+        from astrbot_plugin_angel_heart.core.jev_decider import build_questions
+
+        criteria = build_questions()["reply_strategy"]["criteria"]
+        assert set(criteria) == {
+            "answer_question",
+            "join_topic",
+            "offer_help",
+            "greet",
+            "stay_silent",
+        }
+
+
+class TestBuildDecision:
+    """概率 → 决策对象的映射。"""
+
+    def _raw(self, reply=0.9, questioned=0.8, interesting=0.2, strategy="answer_question"):
+        return {
+            "ok": True,
+            "probabilities": {
+                "should_reply": reply,
+                "is_questioned": questioned,
+                "is_interesting": interesting,
+            },
+            "reply_strategy": strategy,
+        }
+
+    def test_probabilities_map_to_booleans(self):
+        from astrbot_plugin_angel_heart.core.jev_decider import build_decision
+
+        decision = build_decision(
+            self._raw(reply=0.9, questioned=0.8), [make_msg("A", "你好")], {}
+        )
+        assert decision.should_reply is True
+        assert decision.is_questioned is True
+        assert decision.is_interesting is False
+
+    def test_threshold_is_respected(self):
+        from astrbot_plugin_angel_heart.core.jev_decider import build_decision
+
+        decision = build_decision(
+            self._raw(reply=0.5, questioned=0.9), [make_msg("A", "你好")], {}
+        )
+        assert decision.should_reply is False
+
+    def test_missing_probability_is_not_reply(self):
+        from astrbot_plugin_angel_heart.core.jev_decider import build_decision
+
+        decision = build_decision(
+            {"ok": True, "probabilities": {}, "reply_strategy": "answer_question"},
+            [make_msg("A", "你好")],
+            {},
+        )
+        assert decision.should_reply is False
+
+    def test_positive_condition_required(self):
+        """should_reply 为真但无正当理由时仍不回复。"""
+        from astrbot_plugin_angel_heart.core.jev_decider import build_decision
+
+        decision = build_decision(
+            self._raw(reply=0.9, questioned=0.1, interesting=0.1),
+            [make_msg("A", "闲聊")],
+            {},
+        )
+        assert decision.should_reply is False
+
+    def test_reply_even_not_questioned_allows_reply(self):
+        from astrbot_plugin_angel_heart.core.jev_decider import build_decision
+
+        decision = build_decision(
+            self._raw(reply=0.9, questioned=0.1, interesting=0.1),
+            [make_msg("A", "闲聊")],
+            {},
+            reply_even_not_questioned=True,
+        )
+        assert decision.should_reply is True
+
+    def test_strategy_key_maps_to_chinese_label(self):
+        from astrbot_plugin_angel_heart.core.jev_decider import build_decision
+
+        decision = build_decision(
+            self._raw(strategy="join_topic"), [make_msg("A", "你好")], {}
+        )
+        assert decision.reply_strategy == "加入话题"
+
+    def test_stay_silent_forces_no_reply(self):
+        from astrbot_plugin_angel_heart.core.jev_decider import build_decision
+
+        decision = build_decision(
+            self._raw(strategy="stay_silent"), [make_msg("A", "你好")], {}
+        )
+        assert decision.should_reply is False
+
+    def test_topic_falls_back_to_latest_message(self):
+        from astrbot_plugin_angel_heart.core.jev_decider import build_decision
+
+        decision = build_decision(self._raw(), [make_msg("A", "讲个笑话")], {})
+        assert decision.topic == "讲个笑话"
+
+    def test_probability_parser_rejects_invalid(self):
+        """概率必须是 0-1 的有限数；非法值视为缺失。"""
+        from astrbot_plugin_angel_heart.core.jev_transport import probability
+
+        assert probability({"noul": 0.5}) == 0.5
+        assert probability({"noul": 0.0}) == 0.0
+        assert probability({"noul": 1.5}) is None
+        assert probability({"noul": "x"}) is None
+        assert probability({}) is None
+        assert probability(None) is None
+
+
+class TestJevDecider:
+    """JevDecider.decide 的成功与失败路径。"""
+
+    @pytest.mark.asyncio
+    async def test_missing_api_key_returns_error(self):
+        from astrbot_plugin_angel_heart.core.jev_decider import JevDecider
+
+        result = await JevDecider().decide({}, [make_msg("A", "你好")])
+        assert result["ok"] is False
+        assert "api_key" in result["error"]
+
+    @pytest.mark.asyncio
+    async def test_empty_dialogue_returns_error(self):
+        from astrbot_plugin_angel_heart.core.jev_decider import JevDecider
+
+        result = await JevDecider().decide({"api_key": "sk-x"}, [])
+        assert result["ok"] is False
+
+    @pytest.mark.asyncio
+    async def test_ready_answer_is_mapped(self):
+        from astrbot_plugin_angel_heart.core.jev_decider import JevDecider
+
+        decider = JevDecider()
+        decider.client = AsyncMock()
+        decider.client.evaluate.return_value = {
+            "status": "ready",
+            "answers": ready_answers(),
+        }
+        result = await decider.decide(
+            {"api_key": "sk-x"}, [make_msg("A", "在吗")], alias="fairy"
+        )
+        assert result["ok"] is True
+        assert result["probabilities"]["should_reply"] == 0.9
+        assert result["probabilities"]["is_interesting"] == 0.3
+        assert result["reply_strategy"] == "answer_question"
+
+    @pytest.mark.asyncio
+    async def test_failure_is_reported_with_reason(self):
+        from astrbot_plugin_angel_heart.core.jev_decider import JevDecider
+
+        decider = JevDecider()
+        decider.client = AsyncMock()
+        decider.client.evaluate.return_value = {
+            "status": "unauthorized",
+            "http_status": 401,
+            "retryable": False,
+            "error_message": "Invalid or disabled API key.",
+        }
+        result = await decider.decide({"api_key": "sk-bad"}, [make_msg("A", "在吗")])
+        assert result["ok"] is False
+        assert "API Key" in result["error"]
+
+    @pytest.mark.asyncio
+    async def test_retry_uses_new_key_after_server_error(self):
+        """服务端已回错误时换新幂等键重跑；压根没响应时沿用旧键。"""
+        from astrbot_plugin_angel_heart.core.jev_decider import JevDecider
+
+        decider = JevDecider()
+        decider.client = AsyncMock()
+        decider.client.evaluate.side_effect = [
+            {
+                "status": "upstream_error",
+                "http_status": 502,
+                "retryable": True,
+                "retry_after": 0,
+            },
+            {"status": "ready", "answers": ready_answers()},
+        ]
+        result = await decider.decide(
+            {"api_key": "sk-x", "retries": 1}, [make_msg("A", "在吗")]
+        )
+        assert result["ok"] is True
+        first_key = decider.client.evaluate.call_args_list[0][0][3]
+        second_key = decider.client.evaluate.call_args_list[1][0][3]
+        assert first_key != second_key
+
+    @pytest.mark.asyncio
+    async def test_no_retry_when_not_retryable(self):
+        from astrbot_plugin_angel_heart.core.jev_decider import JevDecider
+
+        decider = JevDecider()
+        decider.client = AsyncMock()
+        decider.client.evaluate.return_value = {
+            "status": "unauthorized",
+            "http_status": 401,
+            "retryable": False,
+        }
+        result = await decider.decide(
+            {"api_key": "sk-bad", "retries": 2}, [make_msg("A", "在吗")]
+        )
+        assert result["ok"] is False
+        assert decider.client.evaluate.await_count == 1
+
+
+class TestSecretaryBackendDispatch:
+    """秘书按 decision_backend 走 llm / jev / hybrid 三条分支。"""
+
+    def _secretary(self, config):
+        from astrbot_plugin_angel_heart.roles.secretary import Secretary
+
+        angel_context = None
+        secretary = Secretary(config, context=None, angel_context=angel_context)
+        return secretary
+
+    @pytest.mark.asyncio
+    async def test_llm_backend_calls_analyzer(self):
+        from astrbot_plugin_angel_heart.models.analysis_result import SecretaryDecision
+
+        secretary = self._secretary(make_config(backend="llm"))
+        secretary.llm_analyzer.analyze_and_decide = AsyncMock(
+            return_value=SecretaryDecision(
+                should_reply=True, reply_strategy="策略", topic="话题",
+                entities=[], facts=[], keywords=[]
+            )
+        )
+        secretary.jev_decider.decide = AsyncMock()
+
+        decision = await secretary.perform_analysis([make_msg("A", "在吗")], [], "chat")
+        assert decision.should_reply is True
+        assert secretary.llm_analyzer.analyze_and_decide.await_count == 1
+        assert secretary.jev_decider.decide.await_count == 0
+
+    @pytest.mark.asyncio
+    async def test_jev_backend_skips_analyzer(self):
+        secretary = self._secretary(make_config(backend="jev"))
+        secretary.llm_analyzer.analyze_and_decide = AsyncMock()
+        secretary.jev_decider.decide = AsyncMock(
+            return_value={
+                "ok": True,
+                "probabilities": {
+                    "should_reply": 0.9,
+                    "is_questioned": 0.8,
+                    "is_interesting": 0.2,
+                },
+                "reply_strategy": "answer_question",
+            }
+        )
+
+        decision = await secretary.perform_analysis([make_msg("A", "在吗")], [], "chat")
+        assert decision.should_reply is True
+        assert decision.reply_strategy == "回答提问"
+        assert secretary.llm_analyzer.analyze_and_decide.await_count == 0
+        assert secretary.jev_decider.decide.await_count == 1
+
+    @pytest.mark.asyncio
+    async def test_jev_backend_disabled_falls_back_to_llm(self):
+        """Jev 总开关关闭时不得走 Jev，仍用秘书模型。"""
+        from astrbot_plugin_angel_heart.models.analysis_result import SecretaryDecision
+
+        secretary = self._secretary(make_config(backend="jev", jev_enabled=False))
+        secretary.llm_analyzer.analyze_and_decide = AsyncMock(
+            return_value=SecretaryDecision(
+                should_reply=True, reply_strategy="策略", topic="话题",
+                entities=[], facts=[], keywords=[]
+            )
+        )
+        secretary.jev_decider.decide = AsyncMock()
+
+        await secretary.perform_analysis([make_msg("A", "在吗")], [], "chat")
+        assert secretary.llm_analyzer.analyze_and_decide.await_count == 1
+        assert secretary.jev_decider.decide.await_count == 0
+
+    @pytest.mark.asyncio
+    async def test_hybrid_gate_blocks_llm_call(self):
+        """hybrid：Jev 门控未通过时不再调用秘书模型。"""
+        secretary = self._secretary(make_config(backend="hybrid"))
+        secretary.llm_analyzer.analyze_and_decide = AsyncMock()
+        secretary.jev_decider.decide = AsyncMock(
+            return_value={
+                "ok": True,
+                "probabilities": {
+                    "should_reply": 0.1,
+                    "is_questioned": 0.1,
+                    "is_interesting": 0.1,
+                },
+                "reply_strategy": "stay_silent",
+            }
+        )
+
+        decision = await secretary.perform_analysis([make_msg("A", "闲聊")], [], "chat")
+        assert decision.should_reply is False
+        assert secretary.llm_analyzer.analyze_and_decide.await_count == 0
+
+    @pytest.mark.asyncio
+    async def test_hybrid_gate_passes_to_llm(self):
+        from astrbot_plugin_angel_heart.models.analysis_result import SecretaryDecision
+
+        secretary = self._secretary(make_config(backend="hybrid"))
+        secretary.llm_analyzer.analyze_and_decide = AsyncMock(
+            return_value=SecretaryDecision(
+                should_reply=True, reply_strategy="策略", topic="话题",
+                entities=[], facts=[], keywords=[]
+            )
+        )
+        secretary.jev_decider.decide = AsyncMock(
+            return_value={
+                "ok": True,
+                "probabilities": {
+                    "should_reply": 0.9,
+                    "is_questioned": 0.8,
+                    "is_interesting": 0.5,
+                },
+                "reply_strategy": "answer_question",
+            }
+        )
+
+        await secretary.perform_analysis([make_msg("A", "在吗")], [], "chat")
+        assert secretary.llm_analyzer.analyze_and_decide.await_count == 1
+
+    @pytest.mark.asyncio
+    async def test_hybrid_gate_failure_passes_to_llm(self):
+        """门控自身失败不阻断主流程：放行给秘书模型。"""
+        from astrbot_plugin_angel_heart.models.analysis_result import SecretaryDecision
+
+        secretary = self._secretary(make_config(backend="hybrid"))
+        secretary.llm_analyzer.analyze_and_decide = AsyncMock(
+            return_value=SecretaryDecision(
+                should_reply=True, reply_strategy="策略", topic="话题",
+                entities=[], facts=[], keywords=[]
+            )
+        )
+        secretary.jev_decider.decide = AsyncMock(
+            return_value={"ok": False, "error": "Jev 请求失败"}
+        )
+
+        await secretary.perform_analysis([make_msg("A", "在吗")], [], "chat")
+        assert secretary.llm_analyzer.analyze_and_decide.await_count == 1
+
+    @pytest.mark.asyncio
+    async def test_jev_backend_failure_does_not_reply(self):
+        """jev 模式下决策失败只告警，不回复。"""
+        secretary = self._secretary(make_config(backend="jev"))
+        secretary.llm_analyzer.analyze_and_decide = AsyncMock()
+        secretary.jev_decider.decide = AsyncMock(
+            return_value={"ok": False, "error": "Jev 请求失败"}
+        )
+
+        decision = await secretary.perform_analysis([make_msg("A", "在吗")], [], "chat")
+        assert decision.should_reply is False
+        assert secretary.llm_analyzer.analyze_and_decide.await_count == 0
+
+
+class TestConfigManagerBackend:
+    """配置读取与回落。"""
+
+    def test_default_backend_is_llm(self):
+        assert make_config().decision_backend == "llm"
+
+    def test_unknown_backend_falls_back(self):
+        from astrbot_plugin_angel_heart.core.config_manager import ConfigManager
+
+        cm = ConfigManager({"decision_backend": "nope"})
+        assert cm.decision_backend == "llm"
+
+    def test_known_backends(self):
+        assert make_config(backend="jev").decision_backend == "jev"
+        assert make_config(backend="hybrid").decision_backend == "hybrid"
+
+    def test_jev_enabled_requires_key(self):
+        """Jev 可用性 = 总开关打开 且 已填 API Key。"""
+        assert make_config(jev_enabled=True).jev_decision_enabled is True
+        assert make_config(jev_enabled=False).jev_decision_enabled is False
+        assert make_config(jev_enabled=True, api_key="").jev_decision_enabled is False
+
+
+class TestVisualConfigSelectable:
+    """可视化配置必须能下拉选决策方式。"""
+
+    def _schema(self) -> dict:
+        return json.loads((PLUGIN_ROOT / "_conf_schema.json").read_text(encoding="utf-8"))
+
+    def test_schema_exposes_selectable_backend(self):
+        meta = self._schema()["decision_backend"]
+        assert meta["type"] == "string"
+        assert meta["options"] == ["llm", "jev", "hybrid"]
+        assert len(meta["labels"]) == 3
+        assert len(meta["subtitles"]) == 3
+
+    def test_schema_exposes_jev_group(self):
+        items = self._schema()["jev_decision"]["items"]
+        for key in ("enabled", "api_key", "base_url", "model"):
+            assert key in items
+
+    def test_web_api_rejects_value_outside_options(self):
+        import asyncio
+
+        from astrbot_plugin_angel_heart.web_api import PluginConfigAPI
+
+        api = PluginConfigAPI.__new__(PluginConfigAPI)
+        api._config = MagicMock()
+        api._config.__contains__.return_value = True
+        api._schema = self._schema()
+
+        result = _run_in_app(
+            api.save_config, {"values": {"decision_backend": "bogus"}}
+        )
+        assert result["status"] == "error"
+
+    def test_web_api_accepts_string_without_options(self):
+        from astrbot_plugin_angel_heart.web_api import PluginConfigAPI
+
+        api = PluginConfigAPI.__new__(PluginConfigAPI)
+        api._config = MagicMock()
+        api._schema = self._schema()
+        api._plugin = MagicMock()
+
+        result = _run_in_app(
+            api.save_config, {"values": {"jev_decision": {"api_key": "sk-x"}}}
+        )
+        assert result["status"] == "ok"
+
+
+class TestPerformanceOptimizations:
+    """性能优化的行为回归：缓存不能给出过期值，时间格式不能变。"""
+
+    def test_absolute_time_matches_original_formula(self):
+        """分钟级缓存后的输出必须与原始实现逐字一致。"""
+        from datetime import datetime
+
+        from astrbot_plugin_angel_heart.core.utils.time_utils import (
+            format_absolute_time,
+        )
+
+        for ts in (1700000000.0, 1700000059.9, 1700001234.5, 1.0, 999999999.0):
+            expected = (
+                f" ({datetime.fromtimestamp(ts).astimezone().strftime('%Y-%m-%d %H:%M')})"
+            )
+            assert format_absolute_time(ts) == expected, ts
+
+    def test_absolute_time_invalid_inputs(self):
+        from astrbot_plugin_angel_heart.core.utils.time_utils import (
+            format_absolute_time,
+        )
+
+        assert format_absolute_time(0) == ""
+        assert format_absolute_time(-1) == ""
+        assert format_absolute_time("bad") == ""
+
+    def test_resolve_override_reflects_template_update(self):
+        """模板改了之后，缓存必须失效。"""
+        from astrbot_plugin_angel_heart.core.chat_profile import ChatProfileStore
+
+        store = ChatProfileStore(tempfile.mkdtemp())
+        tpl = store.create_template("t", config={"timing": {"waiting_time": 3.0}})
+        store.set_binding("chat:g:1", tpl["id"])
+        assert store.resolve_override("chat:g:1")["timing"]["waiting_time"] == 3.0
+
+        store.update_template(
+            tpl["id"], {"config": {"timing": {"waiting_time": 9.0}}}
+        )
+        assert store.resolve_override("chat:g:1")["timing"]["waiting_time"] == 9.0
+
+    def test_resolve_override_reflects_binding_change(self):
+        from astrbot_plugin_angel_heart.core.chat_profile import ChatProfileStore
+
+        store = ChatProfileStore(tempfile.mkdtemp())
+        a = store.create_template("a", config={"timing": {"waiting_time": 1.0}})
+        b = store.create_template("b", config={"timing": {"waiting_time": 2.0}})
+        store.set_binding("chat:g:1", a["id"])
+        assert store.resolve_override("chat:g:1")["timing"]["waiting_time"] == 1.0
+
+        store.set_binding("chat:g:1", b["id"])
+        assert store.resolve_override("chat:g:1")["timing"]["waiting_time"] == 2.0
+
+        store.set_binding("chat:g:1", "")
+        assert store.resolve_override("chat:g:1") is None
+
+    def test_resolve_override_reflects_template_delete(self):
+        from astrbot_plugin_angel_heart.core.chat_profile import ChatProfileStore
+
+        store = ChatProfileStore(tempfile.mkdtemp())
+        tpl = store.create_template("t", config={"timing": {"waiting_time": 3.0}})
+        store.set_binding("chat:g:1", tpl["id"])
+        assert store.resolve_override("chat:g:1") is not None
+
+        store.delete_template(tpl["id"])
+        assert store.resolve_override("chat:g:1") is None
+
+    def test_config_view_reads_template_override(self):
+        """视图内缓存的模板覆盖值仍然正确。"""
+        from astrbot_plugin_angel_heart.core.chat_profile import ChatProfileStore
+        from astrbot_plugin_angel_heart.core.config_manager import ConfigManager
+
+        store = ChatProfileStore(tempfile.mkdtemp())
+        tpl = store.create_template(
+            "t", config={"wake_interaction": {"alias": "小天使"}}
+        )
+        store.set_binding("chat:g:1", tpl["id"])
+        cm = ConfigManager({"wake_interaction": {"alias": "默认"}})
+        cm.attach_profile_store(store)
+
+        view = cm.for_chat("chat:g:1")
+        assert view.alias == "小天使"
+        assert view.alias == "小天使"  # 第二次读走缓存，结果一致
+        assert cm.for_chat("chat:g:2").alias == "默认"
+
+    def test_transport_request_body_is_plain_json(self):
+        """请求体改成预序列化字节后，线上内容必须与 json= 完全一致。"""
+        import json as _json
+
+        from astrbot_plugin_angel_heart.core import jev_transport as T
+
+        payload = {"model": "jev-latest", "state": "状态", "questions": {"q": {"type": "noul"}}}
+        expected = _json.dumps(
+            payload, ensure_ascii=False, separators=(",", ":")
+        ).encode()
+        assert T.json.dumps(
+            payload, ensure_ascii=False, separators=(",", ":")
+        ).encode() == expected
+
+    def test_validator_still_catches_real_overflow(self):
+        """快速判断只能跳过必然通过的检查，真正的超限必须照常拦下。"""
+        from astrbot_plugin_angel_heart.core.jev_transport import (
+            MAX_CRITERIA_CHARS,
+            MAX_STATE_CHARS,
+            validate_request,
+        )
+
+        huge_state = "x" * (MAX_STATE_CHARS + 10)
+        problems = validate_request(huge_state, {"q": {"type": "noul", "instructions": "x"}})
+        assert problems and "state" in problems[0]
+
+        huge_criteria = {"true": "y" * (MAX_CRITERIA_CHARS + 10)}
+        problems = validate_request("s", {"q": {"type": "noul", "instructions": "x",
+                                               "criteria": huge_criteria}})
+        assert problems and "criteria" in problems[0]
+
+    def test_small_request_passes_validation(self):
+        from astrbot_plugin_angel_heart.core.jev_decider import build_questions
+        from astrbot_plugin_angel_heart.core.jev_transport import validate_request
+
+        assert validate_request("短状态", build_questions()) == []
+
+
+class TestJevTransportContract:
+    """传输层契约：端点归一、幂等键、预检、错误码、预算口径。"""
+
+    def test_base_url_normalization(self):
+        from astrbot_plugin_angel_heart.core.jev_transport import normalize_base_url
+
+        assert normalize_base_url("https://jevmodel.org") == (
+            "https://jevmodel.org/v1/systemone"
+        )
+        assert normalize_base_url("https://jevmodel.org/") == (
+            "https://jevmodel.org/v1/systemone"
+        )
+        assert normalize_base_url("https://jevmodel.org/v1") == (
+            "https://jevmodel.org/v1/systemone"
+        )
+        assert normalize_base_url("https://jevmodel.org/v1/systemone") == (
+            "https://jevmodel.org/v1/systemone"
+        )
+
+    def test_idempotency_key_is_unique_and_short(self):
+        from astrbot_plugin_angel_heart.core.jev_transport import new_idempotency_key
+
+        a = new_idempotency_key()
+        b = new_idempotency_key()
+        assert a != b
+        assert len(a) <= 100
+        assert a.startswith("angel-")
+
+    def test_validator_rejects_oversized_request(self):
+        from astrbot_plugin_angel_heart.core.jev_transport import validate_request
+
+        problems = validate_request(
+            "x" * 10,
+            {"q" * 65: {"type": "noul", "instructions": "x"}},
+        )
+        assert problems
+
+    def test_validator_accepts_empty_question_set(self):
+        from astrbot_plugin_angel_heart.core.jev_transport import validate_request
+
+        assert validate_request("state", {}) != []
+
+    def test_error_status_mapping(self):
+        from astrbot_plugin_angel_heart.core.jev_transport import error_status
+
+        assert error_status(401) == "unauthorized"
+        assert error_status(402) == "insufficient_credits"
+        assert error_status(409) == "conflict"
+        assert error_status(422) == "invalid_request"
+        assert error_status(429) == "rate_limited"
+        assert error_status(502) == "upstream_error"
+
+    def test_error_body_is_parsed(self):
+        from astrbot_plugin_angel_heart.core.jev_transport import parse_error
+
+        kind, message = parse_error(
+            {"error": {"type": "authentication_error", "message": "Invalid key"}}
+        )
+        assert kind == "authentication_error"
+        assert message == "Invalid key"
+
+    def test_budget_is_shared_single_source(self):
+        """预算口径统一在 budget_seconds：传输层、判读层、调用方共用。"""
+        from astrbot_plugin_angel_heart.core.jev_transport import budget_seconds
+
+        assert budget_seconds({"timeout_sec": 7}) == 7.0
+        assert budget_seconds({}) == 8.0
+        assert budget_seconds({"timeout_sec": "bad"}) == 8.0
+        assert budget_seconds({"timeout_sec": 999}) == 20.0
+        assert budget_seconds({"timeout_sec": 0.1}) == 1.0

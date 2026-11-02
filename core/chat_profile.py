@@ -89,6 +89,11 @@ class ChatProfileStore:
         self._templates: Dict[str, Dict] = {}
         self._bindings: Dict[str, str] = {}
         self._loaded = False
+        # 只读缓存：模板过滤结果与 chat→模板 的解析结果。
+        # 配置读取在每条消息的流水线上反复发生，重算 filter_template_config
+        # 是纯重复劳动；模板/绑定变更时统一失效。
+        self._override_cache: Dict[str, Dict] = {}
+        self._binding_cache: Dict[str, str] = {}
 
     # ---------- 持久化 ----------
 
@@ -203,6 +208,7 @@ class ChatProfileStore:
                 template["description"] = str(patch["description"] or "").strip()
             if "config" in patch:
                 template["config"] = filter_template_config(patch["config"])
+                self._override_cache.pop(template_id, None)
             template["updated_at"] = self._now()
             self.save()
             return dict(template)
@@ -219,6 +225,8 @@ class ChatProfileStore:
                 for chat_id, tid in self._bindings.items()
                 if tid != template_id
             }
+            self._override_cache.pop(template_id, None)
+            self._binding_cache.clear()
             self.save()
             return True
 
@@ -240,6 +248,7 @@ class ChatProfileStore:
                 self._bindings[chat_id] = template_id
             else:
                 self._bindings.pop(chat_id, None)
+            self._binding_cache.clear()
             self.save()
             return True
 
@@ -307,13 +316,21 @@ class ChatProfileStore:
         """
         with self._lock:
             self._ensure_loaded()
-            template_id = self._bindings.get(self._resolve_key(chat_id), "")
+            template_id = self._binding_cache.get(chat_id)
+            if template_id is None:
+                template_id = self._bindings.get(self._resolve_key(chat_id), "")
+                self._binding_cache[chat_id] = template_id
             if not template_id:
                 return None
+            cached = self._override_cache.get(template_id)
+            if cached is not None:
+                return cached
             template = self._templates.get(template_id)
             if not template:
                 return None
-            return filter_template_config(template.get("config"))
+            filtered = filter_template_config(template.get("config"))
+            self._override_cache[template_id] = filtered
+            return filtered
 
     # ---------- 工具 ----------
 

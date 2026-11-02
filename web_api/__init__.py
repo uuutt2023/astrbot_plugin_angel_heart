@@ -436,6 +436,17 @@ def _convert_value(value, meta, path: str) -> tuple[list[str], Any]:
     # string / text
     if not isinstance(value, str):
         return [f"{path} 应为字符串"], value
+    # 枚举字段：取值必须落在 options 之内
+    options = meta.get("options")
+    if isinstance(options, list) and options:
+        allowed = {
+            opt if isinstance(opt, str) else opt.get("value")
+            for opt in options
+            if isinstance(opt, (str, dict))
+        }
+        allowed.discard(None)
+        if value not in allowed:
+            return [f"{path} 取值应为 {sorted(allowed)} 之一"], value
     return [], value
 
 

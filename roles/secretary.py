@@ -6,6 +6,7 @@ AngelHeart 插件 - 秘书角色 (Secretary)
 import asyncio
 from typing import Dict, List
 
+from ..core.jev_decider import JevDecider, build_decision
 from ..core.llm_analyzer import LLMAnalyzer
 from ..models.analysis_result import SecretaryDecision
 from ..core.angel_heart_status import AngelHeartStatus
@@ -38,6 +39,8 @@ class Secretary:
         self.llm_analyzer = LLMAnalyzer(
             analyzer_model_name, context, self.config_manager
         )
+        # Jev 决策器：仅在决策方式为 jev / hybrid 时真正发起请求
+        self.jev_decider = JevDecider()
 
     async def handle_message_by_state(self, event: AstrMessageEvent) -> SecretaryDecision:
         """
@@ -116,7 +119,12 @@ class Secretary:
     ) -> SecretaryDecision:
         """
         秘书职责：分析缓存内容并做出决策。
-        此函数只负责调用LLM分析器，不再关心缓存和历史记录的剪枝。
+        此函数只负责调用分析器，不再关心缓存和历史记录的剪枝。
+
+        决策方式由「秘书决策方式」决定：
+        - llm：轻量秘书模型产出完整决策（默认，行为不变）。
+        - jev：只用 Jev 决策模型，按类型化答案装配决策。
+        - hybrid：先用 Jev 做廉价门控，通过后才调用秘书模型产出策略。
 
         Args:
             recent_dialogue (List[Dict]): 剪枝后的新消息列表。
@@ -141,6 +149,20 @@ class Secretary:
             except Exception:
                 work_ledger_text = ""
 
+            backend = self.config_manager.decision_backend
+            jev_ready = self.config_manager.jev_decision_enabled
+            if backend in ("jev", "hybrid") and jev_ready:
+                if backend == "jev":
+                    return await self._decide_by_jev(
+                        recent_dialogue, db_history, chat_id, work_ledger_text
+                    )
+                # hybrid：Jev 先做廉价门控，没通过就不必再花钱调秘书模型
+                gate = await self._jev_gate(
+                    recent_dialogue, db_history, chat_id, work_ledger_text
+                )
+                if gate is not None:
+                    return gate
+
             # 调用分析器进行决策，传递结构化的上下文
             decision = await self.llm_analyzer.analyze_and_decide(
                 historical_context=db_history,
@@ -155,6 +177,105 @@ class Secretary:
             return self._handle_analysis_error(e, "秘书处理过程(超时)", chat_id)
         except Exception as e:
             return self._handle_analysis_error(e, "秘书处理过程", chat_id)
+
+    async def _decide_by_jev(
+        self,
+        recent_dialogue: List[Dict],
+        db_history: List[Dict],
+        chat_id: str,
+        work_ledger_text: str,
+    ) -> SecretaryDecision:
+        """只用 Jev 决策模型产出决策（不调用轻量秘书模型）。"""
+        cfg = self.config_manager.jev_decision
+        alias = self._alias_for(chat_id)
+        raw = await self.jev_decider.decide(
+            cfg,
+            recent_dialogue,
+            historical_context=db_history,
+            alias=alias,
+            work_ledger_text=work_ledger_text,
+        )
+        if not raw.get("ok"):
+            # Jev 不可用属于可预期的运行状况，只告警降级，不打异常栈
+            logger.warning(f"AngelHeart[{chat_id}]: Jev 决策失败：{raw.get('error')}；本轮不回复")
+            return SecretaryDecision(
+                should_reply=False, reply_strategy="Jev 决策失败", topic="未知",
+                entities=[], facts=[], keywords=[]
+            )
+
+        cm = self.config_manager.for_chat(chat_id) if chat_id else self.config_manager
+        decision = build_decision(
+            raw,
+            recent_dialogue,
+            cfg,
+            reply_even_not_questioned=bool(cm.reply_even_not_questioned),
+        )
+        logger.info(
+            f"AngelHeart[{chat_id}]: Jev 决策完成 | 回复={decision.should_reply} "
+            f"策略={decision.reply_strategy} 概率={raw.get('probabilities')}"
+        )
+        return decision
+
+    async def _jev_gate(
+        self,
+        recent_dialogue: List[Dict],
+        db_history: List[Dict],
+        chat_id: str,
+        work_ledger_text: str,
+    ) -> SecretaryDecision | None:
+        """hybrid 模式的廉价门控：Jev 认为没戏就不必再调秘书模型。
+
+        Returns:
+            None 表示放行（继续走秘书模型）；否则返回「不回复」的决策。
+        """
+        cfg = self.config_manager.jev_decision
+        raw = await self.jev_decider.decide(
+            cfg,
+            recent_dialogue,
+            historical_context=db_history,
+            alias=self._alias_for(chat_id),
+            work_ledger_text=work_ledger_text,
+        )
+        if not raw.get("ok"):
+            # 门控本身失败不阻断主流程：放行给秘书模型判断
+            logger.warning(
+                f"AngelHeart[{chat_id}]: Jev 门控失败，放行给秘书模型：{raw.get('error')}"
+            )
+            return None
+
+        probabilities = raw.get("probabilities") or {}
+        p_reply = probabilities.get("should_reply")
+        threshold = _float(cfg.get("reply_threshold"), 0.6)
+        if p_reply is not None and p_reply >= threshold:
+            logger.debug(f"AngelHeart[{chat_id}]: Jev 门控放行（概率 {p_reply}）")
+            return None
+
+        logger.info(
+            f"AngelHeart[{chat_id}]: Jev 门控未通过（概率 {p_reply} < {threshold}），本轮不回复"
+        )
+        return SecretaryDecision(
+            should_reply=False,
+            reply_strategy="继续观察",
+            topic="未知",
+            entities=[],
+            facts=[],
+            keywords=[],
+        )
+
+    def _alias_for(self, chat_id: str) -> str:
+        """取当前会话生效的昵称（按群模板覆盖，未绑定回退全局）。"""
+        try:
+            cm = self.config_manager.for_chat(chat_id) if chat_id else self.config_manager
+            return str(cm.alias or "AngelHeart")
+        except Exception:  # noqa: BLE001
+            return "AngelHeart"
+
+    async def close(self) -> None:
+        """释放底层资源（当前只有 Jev 决策器的 HTTP 会话）。"""
+        try:
+            await self.jev_decider.close()
+        except Exception as e:  # noqa: BLE001
+            logger.warning(f"AngelHeart: 关闭 Jev 决策器失败：{e}")
 
     @property
     def config_manager(self):
@@ -184,3 +305,11 @@ class Secretary:
             should_reply=False, reply_strategy=f"{context}失败", topic="未知",
             entities=[], facts=[], keywords=[]
         )
+
+
+def _float(value, default: float) -> float:
+    """宽松取浮点数，异常回退默认值。"""
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return default

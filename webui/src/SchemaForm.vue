@@ -27,9 +27,24 @@
             <div v-if="row.hint" class="field-hint">{{ row.hint }}</div>
           </div>
           <div class="field-control">
+            <!-- 枚举下拉：schema 提供 options 时（展示文本取 labels，与 options 按索引对应） -->
+            <div
+              v-if="hasOptions(row.meta)"
+              class="control-select-wrap"
+            >
+              <n-select
+                :value="asString(getIn(row.path))"
+                :options="optionList(row.meta)"
+                class="control-select"
+                @update:value="(v: unknown) => setIn(row.path, v ?? '')"
+              />
+              <p v-if="optionSubtitle(row.meta, asString(getIn(row.path)))" class="control-subtitle">
+                {{ optionSubtitle(row.meta, asString(getIn(row.path))) }}
+              </p>
+            </div>
             <!-- provider 下拉：显式标记或 *_provider_id 且有可选数据 -->
             <n-select
-              v-if="isProviderSelect(row.meta, row.path)"
+              v-else-if="isProviderSelect(row.meta, row.path)"
               :value="asString(getIn(row.path))"
               :options="providerOptions(row.path)"
               clearable
@@ -345,6 +360,29 @@ function isProviderSelect(meta: SchemaMeta, path: string[]): boolean {
   return !!ids?.length
 }
 
+// 枚举字段：schema 提供 options 即渲染下拉
+function hasOptions(meta: SchemaMeta): boolean {
+  return Array.isArray(meta.options) && meta.options.length > 0
+}
+
+// options 是保存值；labels / subtitles 按索引对应（与 AstrBot 原生配置页一致）
+function optionList(meta: SchemaMeta): { label: string; value: string }[] {
+  const options = meta.options || []
+  return options.map((opt, index) => {
+    const value = typeof opt === 'string' ? opt : opt.value
+    const label = typeof opt === 'string' ? (meta.labels?.[index] ?? opt) : opt.label
+    return { label, value }
+  })
+}
+
+// 当前选中项的说明文字（subtitles 与 options 按索引对应）
+function optionSubtitle(meta: SchemaMeta, value: string): string {
+  const options = meta.options || []
+  const index = options.findIndex((opt) => (typeof opt === 'string' ? opt : opt.value) === value)
+  if (index < 0) return ''
+  return meta.subtitles?.[index] ?? ''
+}
+
 function providerOptions(path: string[]) {
   const key = path[path.length - 1]
   const p = props.providers || {}
@@ -430,6 +468,23 @@ function providerOptions(path: string[]) {
 
 .control-select {
   width: 260px;
+}
+
+/* 枚举下拉：选项说明挂在控件下方 */
+.control-select-wrap {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 4px;
+}
+
+.control-subtitle {
+  margin: 0;
+  max-width: 260px;
+  font-size: 11px;
+  line-height: 1.5;
+  color: var(--sf-muted);
+  text-align: right;
 }
 
 .control-text {

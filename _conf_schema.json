@@ -2,9 +2,30 @@
   "analyzer_model": {
     "type": "string",
     "description": "[核心模型] 秘书模型",
-    "hint": "用于分析对话、决定是否回复的快速、低成本模型提供商。",
+    "hint": "用于分析对话、决定是否回复的快速、低成本模型提供商。决策方式选 jev / hybrid 且 Jev 已启用时，Jev 负责门控判断，本项仅用于产出策略。",
     "_special": "select_provider",
     "default": ""
+  },
+  "decision_backend": {
+    "type": "string",
+    "description": "[核心模型] 秘书决策方式",
+    "hint": "选择秘书用什么做决策。llm＝用轻量秘书模型（默认）；jev＝只用 Jev 决策模型（类型化判断，不生成文本）；hybrid＝先用 Jev 做廉价门控，通过后才调用秘书模型产出策略，省 token。",
+    "options": [
+      "llm",
+      "jev",
+      "hybrid"
+    ],
+    "labels": [
+      "轻量秘书模型（默认）",
+      "Jev 决策模型",
+      "Jev 门控 + 秘书模型"
+    ],
+    "subtitles": [
+      "用轻量秘书模型分析对话并产出完整决策，行为与原来一致。",
+      "只用 Jev 决策模型做类型化判断，不调用大模型；只产出回复与否与策略，不产出话题/实体。",
+      "先用 Jev 廉价门控判定是否值得回复，通过后才调用秘书模型产出策略，省 token。"
+    ],
+    "default": "llm"
   },
   "image_caption_provider_id": {
     "type": "string",
@@ -19,7 +40,6 @@
     "hint": "默认开启。如果是带思维链的模型，请不要关闭。关闭后会要求模型先输出分析过程，再输出 JSON。",
     "default": true
   },
-
   "timing": {
     "type": "object",
     "description": "[回复节奏] 前台巡检与助理休息设置",
@@ -57,7 +77,6 @@
       }
     }
   },
-
   "energy": {
     "type": "object",
     "description": "[能量设置] 群聊能量与回复消耗",
@@ -101,7 +120,6 @@
       }
     }
   },
-
   "reply_length": {
     "type": "object",
     "description": "[回复长度] 常规与焦点字数提醒",
@@ -127,7 +145,6 @@
       }
     }
   },
-
   "leave_reply": {
     "type": "object",
     "description": "[离场应答] 复读或多人热聊时回复一次",
@@ -183,7 +200,6 @@
       }
     }
   },
-
   "wake_interaction": {
     "type": "object",
     "description": "[点名与交互] 点名词与静默控制",
@@ -251,7 +267,6 @@
       }
     }
   },
-
   "access_control": {
     "type": "object",
     "description": "[权限与过滤] 白名单与上下文接管",
@@ -267,7 +282,9 @@
         "type": "list",
         "description": "群聊ID白名单",
         "hint": "请直接填写需要启用白名单的群聊或好友的QQ号列表。",
-        "items": { "type": "string" },
+        "items": {
+          "type": "string"
+        },
         "default": []
       },
       "group_chat_enhancement": {
@@ -284,7 +301,79 @@
       }
     }
   },
-
+  "jev_decision": {
+    "type": "object",
+    "description": "[Jev 决策] Jev 决策模型设置",
+    "hint": "仅在「秘书决策方式」选择 jev 或 hybrid 时生效。Jev 只对输入 token 计费，输出免费。",
+    "items": {
+      "enabled": {
+        "type": "bool",
+        "description": "启用 Jev 决策",
+        "hint": "总开关。关闭时即使决策方式选了 jev/hybrid 也只走秘书模型。",
+        "default": false
+      },
+      "api_key": {
+        "type": "string",
+        "description": "Jev API Key",
+        "hint": "在所选网关的控制台创建，sk- 开头：jevmodel.org 控制台「API keys」（https://jevmodel.org/zh/docs/），或 TypeSafe（https://console.typesafe.ai）。Key 必须与接口地址属于同一个网关。",
+        "default": ""
+      },
+      "base_url": {
+        "type": "string",
+        "description": "Jev 接口地址",
+        "hint": "实际请求 POST {base_url}/v1/systemone。两个网关请求体完全一致，切换只需改这里并换上对应网关的 Key：https://jevmodel.org（文档见 https://jevmodel.org/zh/docs/）或 https://api.typesafe.ai。",
+        "default": "https://jevmodel.org"
+      },
+      "model": {
+        "type": "string",
+        "description": "Jev 模型名",
+        "hint": "默认 jev-latest；jev-preview 支持图像输入与 Box 定位（实验性）。",
+        "default": "jev-latest"
+      },
+      "timeout_sec": {
+        "type": "float",
+        "description": "请求超时（秒）",
+        "hint": "本轮全部尝试共享的总预算，同时也是等待上限（外层守卫再多留 1 秒）。单次 Jev 调用通常需要 2-4 秒，预算低于 5 秒会一直超时。建议 5-10 秒。",
+        "default": 8.0
+      },
+      "retries": {
+        "type": "int",
+        "description": "失败重试次数",
+        "hint": "限流／上游故障（429/502/409）重试次数，退避等待装不进本轮预算时放弃。",
+        "default": 1
+      },
+      "reply_threshold": {
+        "type": "float",
+        "description": "回复概率阈值",
+        "hint": "Jev 判定「应当回复」的 noul 概率达到该值才回复。默认值：0.6。",
+        "default": 0.6
+      },
+      "questioned_threshold": {
+        "type": "float",
+        "description": "被追问阈值",
+        "hint": "Jev 判定「消息在对助理说话」的 noul 概率达到该值才算被追问。默认值：0.5。",
+        "default": 0.5
+      },
+      "interesting_threshold": {
+        "type": "float",
+        "description": "话题价值阈值",
+        "hint": "Jev 判定「话题值得参与」的 noul 概率达到该值才算有兴趣。默认值：0.5。",
+        "default": 0.5
+      },
+      "max_state_chars": {
+        "type": "int",
+        "description": "发送上下文长度上限",
+        "hint": "发送给 Jev 的整段文本裁剪上限，超出部分截断更早的历史。默认值：1200。",
+        "default": 1200
+      },
+      "history_rounds": {
+        "type": "int",
+        "description": "带入的历史条数",
+        "hint": "除当前消息外，额外带入多少条历史消息供 Jev 判断。默认值：4。",
+        "default": 4
+      }
+    }
+  },
   "context_compression": {
     "type": "object",
     "description": "[上下文压缩] 渐进式压缩参数",
@@ -316,7 +405,6 @@
       }
     }
   },
-
   "output_rewrite": {
     "type": "object",
     "description": "[输出处理] 输出重写",

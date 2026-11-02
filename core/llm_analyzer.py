@@ -547,6 +547,11 @@ class LLMAnalyzer:
         # 定义历史与新消息的分隔符对象
         SEPARATOR_OBJ = {"role": "system", "content": "history_separator"}
 
+        # 昵称与整段历史无关，提到循环外取一次：
+        # 每条消息都 for_chat() 会重复解析群模板绑定，是这条热路径最大的开销。
+        cm = self.config_manager.for_chat(chat_id) if self.config_manager and chat_id else self.config_manager
+        alias = cm.alias if cm else "AngelHeart"
+
         # 遍历最近的 MAX_CONVERSATION_LENGTH 条对话
         for conv in conversations[-self.MAX_CONVERSATION_LENGTH :]:
             # 确保 conv 是一个字典
@@ -563,10 +568,7 @@ class LLMAnalyzer:
                 continue  # 跳过分隔符本身，不添加到最终输出
 
             # 使用公共的工具函数格式化消息，确保使用统一的 XML 格式
-            cm = self.config_manager.for_chat(chat_id) if self.config_manager and chat_id else self.config_manager
-            alias = cm.alias if cm else "AngelHeart"
-            formatted_message = format_message_for_llm(conv, alias)
-            lines.append(formatted_message)
+            lines.append(format_message_for_llm(conv, alias))
 
         # 将所有格式化后的行连接成一个字符串并返回
         return "\n".join(lines)

@@ -32,6 +32,9 @@ class ConfigManager:
         self._profile_store = None
         self._prompt_settings = None
         self._active_chat_id = ""
+        # 视图内缓存本群绑定的模板覆盖值：
+        # 一次决策会读十几个分组字段，逐个解析绑定是重复劳动。
+        self._override = None
 
     def attach_profile_store(self, profile_store) -> None:
         """挂载群聊配置模板存储；重复挂载会替换旧引用。"""
@@ -58,13 +61,24 @@ class ConfigManager:
         view._active_chat_id = str(chat_id or "")
         return view
 
+    def _resolved_override(self) -> dict:
+        """取本群绑定的模板覆盖值（视图内只解析一次）。"""
+        if self._override is None:
+            store = self._profile_store
+            self._override = (
+                store.resolve_override(self._active_chat_id)
+                if store is not None and self._active_chat_id
+                else {}
+            )
+        return self._override
+
     def _get_grouped(self, group: str, key: str, default=None):
         """从分组中读取配置，兼容旧的扁平格式。
 
         优先命中当前群聊绑定模板的覆盖值；其次读全局嵌套结构；最后回退旧扁平 key。
         """
         if self._profile_store is not None and self._active_chat_id:
-            override = self._profile_store.resolve_override(self._active_chat_id)
+            override = self._resolved_override()
             if override:
                 grp = override.get(group)
                 if isinstance(grp, dict) and key in grp:
@@ -89,6 +103,26 @@ class ConfigManager:
     @property
     def is_reasoning_model(self) -> bool:
         return self._config.get("is_reasoning_model", False)
+
+    @property
+    def decision_backend(self) -> str:
+        """秘书决策方式：llm（轻量秘书模型）/ jev（Jev 决策模型）/ hybrid（Jev 门控 + 秘书模型）。"""
+        backend = str(self._config.get("decision_backend", "llm") or "llm").strip().lower()
+        return backend if backend in ("llm", "jev", "hybrid") else "llm"
+
+    @property
+    def jev_decision(self) -> dict:
+        """Jev 决策端点配置（仅全局，不参与按群模板覆盖）。"""
+        grp = self._config.get("jev_decision")
+        return grp if isinstance(grp, dict) else {}
+
+    @property
+    def jev_decision_enabled(self) -> bool:
+        """Jev 决策是否可用：总开关打开且已填 API Key。"""
+        cfg = self.jev_decision
+        return bool(cfg.get("enabled", False)) and bool(
+            str(cfg.get("api_key") or "").strip()
+        )
 
     # ========== timing ==========
 

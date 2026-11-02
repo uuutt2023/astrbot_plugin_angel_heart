@@ -4,6 +4,7 @@ AngelHeart 插件 - 时间相关工具函数
 
 import time
 from datetime import datetime, timezone, timedelta
+from functools import lru_cache
 
 # 条件导入：当缺少astrbot依赖时使用Mock
 from astrbot.api import logger
@@ -102,6 +103,21 @@ def get_beijing_time_str() -> str:
     return f"{time_str} ({weekday_str})"
 
 
+@lru_cache(maxsize=2048)
+def _format_absolute_time_cached(minute_bucket: int) -> str:
+    """按分钟缓存的绝对时间格式化。
+
+    输出精确到分钟，同一分钟内的消息共用一份结果；历史上下文动辄几十条，
+    逐条做时区换算与 strftime 是纯重复劳动。
+    """
+    try:
+        # fromtimestamp 返回的就是当地时间；再 astimezone() 只是重复解释一次。
+        msg_dt = datetime.fromtimestamp(minute_bucket * 60)
+        return f" ({msg_dt.strftime('%Y-%m-%d %H:%M')})"
+    except (OverflowError, OSError, ValueError):
+        return ""
+
+
 def format_absolute_time(timestamp: float) -> str:
     """
     将 Unix 时间戳格式化为绝对时间字符串（精确到分钟）。
@@ -123,8 +139,5 @@ def format_absolute_time(timestamp: float) -> str:
     if timestamp <= 0:
         return ""
 
-    try:
-        msg_dt = datetime.fromtimestamp(timestamp).astimezone()
-        return f" ({msg_dt.strftime('%Y-%m-%d %H:%M')})"
-    except (OverflowError, OSError, ValueError):
-        return ""
+    # 向下取整到分钟再查缓存：同一分钟内的消息命中同一条缓存。
+    return _format_absolute_time_cached(int(timestamp // 60))

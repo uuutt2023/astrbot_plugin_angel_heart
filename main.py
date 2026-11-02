@@ -773,4 +773,5 @@ class AngelHeartPlugin(Star):
         """插件被卸载/停用时调用"""
         await self._runtime_tasks.stop()
         await self._cleanup_all_waiting_resources()
+        await self.secretary.close()
         logger.info("💖 AngelHeart 插件已终止")
