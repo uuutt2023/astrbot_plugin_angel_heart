@@ -33,10 +33,7 @@ GATEWAYS = {
 }
 
 # ── 接口协议 ────────────────────────────────────────────────────────────
-# systemone：TypeSafe SystemOne 协议（jevmodel.org / api.typesafe.ai / StartLux）
-# decisions：OpenAI Decisions 协议（POST /v1/decisions）
-# 两者请求体结构不同，但可以互相翻译。内部统一用 SystemOne 的形状，
-# 只在真正发包/收包时翻译一次，判定层完全不用改。
+# 内部统一用 SystemOne 形状，只在发包/收包时翻译，判定层不用改。
 API_FORMAT_SYSTEMONE = "systemone"
 API_FORMAT_DECISIONS = "decisions"
 API_FORMATS = (API_FORMAT_SYSTEMONE, API_FORMAT_DECISIONS)
@@ -112,12 +109,7 @@ def budget_seconds(cfg) -> float:
 
 
 def normalize_base_url(base, api_format: str = API_FORMAT_SYSTEMONE):
-    """把用户填的接口地址收敛成完整端点。
-
-    SystemOne（TypeSafe / Jev / StartLux）走 ``/v1/systemone``，
-    OpenAI Decisions 协议走 ``/v1/decisions``。用户填的地址里如果已经带了
-    另一种协议的尾缀，这里会换成当前选中的那个——不然换了协议还一直打老路径。
-    """
+    """把用户填的地址收敛成完整端点；地址里带了别的协议尾缀时一并换掉。"""
     base = str(base or "").strip().rstrip("/")
     if not base:
         base = GATEWAYS["jevmodel"]
@@ -144,11 +136,7 @@ def resolve_api_format(cfg) -> str:
 
 
 def _decisions_input(state) -> str:
-    """SystemOne 的 state → Decisions 的 input。
-
-    Decisions 的 input 只收字符串或消息数组，收不了对象；结构化 state
-    序列化成 JSON 文本（GoModel 之类的翻译网关也是这么处理的）。
-    """
+    """SystemOne 的 state → Decisions 的 input（只收字符串，对象就序列化成 JSON）。"""
     if isinstance(state, str):
         return state
     try:
@@ -158,11 +146,7 @@ def _decisions_input(state) -> str:
 
 
 def _decisions_question(name: str, question: Dict[str, Any]) -> Optional[Dict[str, Any]]:
-    """SystemOne 的问题定义 → Decisions 的问题定义。
-
-    差别：noul 叫 predicate；候选项从 criteria 映射变成 choices 数组；
-    score 的有序档位从 criteria 字符串数组变成 levels 数组。
-    """
+    """SystemOne 的问题定义 → Decisions 的问题定义（noul→predicate，criteria→choices/levels）。"""
     qtype = question.get("type")
     if qtype not in ("choice", "noul", "score"):
         # box 等 SystemOne 独有类型，Decisions 没有对应物
@@ -207,11 +191,7 @@ def build_payload(
 
 
 def to_systemone_response(data: Dict[str, Any]) -> Dict[str, Any]:
-    """把 OpenAI Decisions 的响应翻译成 SystemOne 的形状。
-
-    翻译后上层（判定层）完全不用改：答案都是「以问题名为键」的映射，
-    概率都是 ``probabilities: {选项: 概率}``，是非题都是 ``noul: 概率``。
-    """
+    """把 Decisions 的响应翻译回 SystemOne 的形状（答案映射 + 概率映射 + noul）。"""
     if not isinstance(data, dict):
         return data
     answers = data.get("answers")
@@ -400,18 +380,11 @@ def error_status(http_status: int) -> str:
 
 
 def parse_error(payload) -> tuple[str, str]:
-    """解析错误包，返回 (类型, 消息)。
-
-    文档给的是 ``{"error": {"type": ..., "message": ...}}``，但中转网关
-    常常直接返回字符串（``{"error": "Task request failed"}``）或者把
-    message 放在顶层——这些形态都要能读出来，否则日志里只有「HTTP 500」，
-    看不到上游真正说了什么。
-    """
+    """解析错误包，返回 (类型, 消息)；兼容 error 为字符串或 message 在顶层。"""
     if not isinstance(payload, dict):
         return "", ""
     error = payload.get("error")
     if isinstance(error, str):
-        # {"error": "Task request failed"}
         return "", error.strip()
     if isinstance(error, dict):
         return str(error.get("type") or ""), str(error.get("message") or "")
@@ -497,8 +470,7 @@ class JevClient:
         ).hexdigest()
         timeout = budget_seconds(cfg)
         model = cfg.get("model") or "jev-latest"
-        # 按目标协议拼请求体；questions 本身保持 SystemOne 形状，
-        # 校验与答案映射都还按 SystemOne 走（Decisions 的响应会翻译回来）。
+        # questions 保持 SystemOne 形状，校验与答案映射都按它走。
         payload = build_payload(model, state, questions, api_format)
         # 只序列化一次：缓存键、字节计数与实际请求体共用同一份 JSON 文本。
         # 之前同一份 state 要 dumps 三遍（键、计数、aiohttp 自己再序列化）。
@@ -606,8 +578,7 @@ class JevClient:
                 if response.status == 200:
                     data = await response.json(content_type=None)
                     if api_format == API_FORMAT_DECISIONS:
-                        # Decisions 的答案数组 → SystemOne 的答案映射，
-                        # 翻译后上层判定层完全不用知道协议差异。
+                        # Decisions 的答案数组 → SystemOne 的答案映射。
                         data = to_systemone_response(data)
                     if valid_answers(data, questions or {}, require_all=api_format != API_FORMAT_DECISIONS):
                         result = {
@@ -683,11 +654,7 @@ class JevClient:
 
 
 def valid_answers(data, questions, require_all: bool = True):
-    """校验响应里的答案。
-
-    ``require_all=False`` 时允许「有的问题没答」——OpenAI Decisions 允许单题
-    拒答（refusal），SystemOne 没有这个概念，翻译时那题会被跳过。
-    """
+    """校验响应里的答案；require_all=False 时允许有的问题没答（Decisions 可单题拒答）。"""
     if not isinstance(data, dict) or not isinstance(data.get("answers"), dict):
         return False
     for name, question in questions.items():

@@ -3,6 +3,10 @@
 ## 未发布
 
 ### Added
+- **配置页文案精简**：Jev 配置组的每个选项改成一句话说明，不再重复解释同一件事
+  （路径只由「接口协议」说、默认值不再在提示里重复、后端下拉去掉了与标签重复的副标题）。
+  AngelHeart 的「Jev 决策」组描述从 1414 字压到 316 字，「回复节奏」「唤醒互动」两组
+  同步收短，并去掉所有提示里冗余的「默认值：X」。`_conf_schema.json`。
 - **接口协议可切换（SystemOne / OpenAI Decisions）**：新增配置项 `api_format`。
   `systemone`（默认）打 `POST {base_url}/v1/systemone`——官方 Jev / TypeSafe /
   StartLux 的 SystemOne 通道都走这个；`decisions` 打 `POST {base_url}/v1/decisions`

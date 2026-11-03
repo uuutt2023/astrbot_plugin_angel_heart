@@ -617,7 +617,8 @@ class TestVisualConfigSelectable:
         assert meta["type"] == "string"
         assert meta["options"] == ["llm", "jev", "hybrid"]
         assert len(meta["labels"]) == 3
-        assert len(meta["subtitles"]) == 3
+        # 副标题可选：要么没有，要么每个选项一条
+        assert len(meta.get("subtitles", meta["options"])) == 3
 
     def test_schema_exposes_jev_group(self):
         items = self._schema()["jev_decision"]["items"]

@@ -8,22 +8,17 @@
   },
   "decision_backend": {
     "type": "string",
-    "description": "[核心模型] 秘书决策方式",
-    "hint": "选择秘书用什么做决策。llm＝用轻量秘书模型（默认）；jev＝只用 Jev 决策模型（类型化判断，不生成文本）；hybrid＝先用 Jev 做廉价门控，通过后才调用秘书模型产出策略，省 token。",
+    "description": "秘书决策方式",
+    "hint": "llm＝调用秘书模型判断（默认）；jev＝只用 Jev 决策模型；hybrid＝Jev 先判，把握不足再回落秘书模型。",
     "options": [
       "llm",
       "jev",
       "hybrid"
     ],
     "labels": [
-      "轻量秘书模型（默认）",
+      "LLM 判断（默认）",
       "Jev 决策模型",
-      "Jev 门控 + 秘书模型"
-    ],
-    "subtitles": [
-      "用轻量秘书模型分析对话并产出完整决策，行为与原来一致。",
-      "只用 Jev 决策模型做类型化判断，不调用大模型；只产出回复与否与策略，不产出话题/实体。",
-      "先用 Jev 廉价门控判定是否值得回复，通过后才调用秘书模型产出策略，省 token。"
+      "Jev 优先 + LLM 兜底"
     ],
     "default": "llm"
   },
@@ -48,31 +43,31 @@
       "waiting_time": {
         "type": "float",
         "description": "助理调用后休息时间（秒）",
-        "hint": "助理被调用后，普通群聊消息不会启动巡检；被点名时可以触发一次加速检查。默认值：30。",
+        "hint": "助理刚被调用后，普通群聊消息不再启动巡检；被点名时可触发一次加速检查。",
         "default": 30.0
       },
       "assistant_debounce_time": {
         "type": "float",
         "description": "点名等待时间（秒）",
-        "hint": "有人 @ 助理或叫到助理时，前台会先整理这段时间内的补充消息，再交给秘书根据最后一条消息判断。默认值：1。",
+        "hint": "点名时先等这段时间收集补充消息，再交给秘书判断。",
         "default": 1.0
       },
       "secretary_debounce_time": {
         "type": "float",
-        "description": "前台巡检最长等待时间（秒）",
-        "hint": "助理已经参与群聊时，前台启动巡检后最多等待这段时间就会检查助理忙闲、休息和能量，再决定是否交给秘书判断。默认值：30。",
+        "description": "巡检最长等待时间（秒）",
+        "hint": "巡检最多等这么久，之后检查忙闲、休息与能量再决定是否交给秘书。",
         "default": 30.0
       },
       "accelerate_debounce_time": {
         "type": "float",
         "description": "连续点名加速等待时间（秒）",
-        "hint": "前台正在等待消息补充时又有人叫到助理，会把本轮等待缩短到这里设定的时长，再交给秘书判断。默认值：1。",
+        "hint": "等待期间又被点名，就把本轮等待缩短到这里。",
         "default": 1.0
       },
       "observation_timeout": {
         "type": "int",
         "description": "在场保持时间（秒）",
-        "hint": "助理被叫到后，最多保持参与群聊这么久；超过后，收到下一条消息时会回到不主动参与的状态。默认值：60。",
+        "hint": "被叫到后最多参与群聊这么久，之后不再主动参与。",
         "default": 60
       }
     }
@@ -85,37 +80,37 @@
       "initial_energy": {
         "type": "float",
         "description": "初始能量",
-        "hint": "每个群首次创建能量状态时使用的能量值。默认值：100。",
+        "hint": "每个群首次创建能量状态时使用的能量值。",
         "default": 100.0
       },
       "max_energy": {
         "type": "float",
         "description": "能量上限",
-        "hint": "能量恢复时不会超过这个值。默认值：100。",
+        "hint": "能量恢复时不会超过这个值。",
         "default": 100.0
       },
       "min_energy": {
         "type": "float",
         "description": "能量下限",
-        "hint": "回复扣能时不会低于这个值。默认值：-100。",
+        "hint": "回复扣能时不会低于这个值。",
         "default": -100.0
       },
       "recovery_per_second": {
         "type": "float",
         "description": "每秒恢复能量",
-        "hint": "普通巡检结束前按经过的时间恢复一次能量。默认值：每秒恢复 0.6。",
+        "hint": "普通巡检结束前按经过的时间恢复一次能量。",
         "default": 0.6
       },
       "base_reply_cost": {
         "type": "float",
         "description": "每次回复基础消耗",
-        "hint": "每次实际形成回复内容时固定扣除的能量。默认值：14。",
+        "hint": "每次实际形成回复内容时固定扣除的能量。",
         "default": 14.0
       },
       "reply_cost_per_character": {
         "type": "float",
         "description": "每字符回复消耗",
-        "hint": "按最终消息链中的有效字符数额外扣除能量。默认值：每字符 0.12。",
+        "hint": "按最终消息链中的有效字符数额外扣除能量。",
         "default": 0.12
       }
     }
@@ -128,19 +123,19 @@
       "focus_instructions": {
         "type": "string",
         "description": "焦点指令（空格分隔）",
-        "hint": "本批群聊消息命中任一短语后，本次回复改用焦点字数提醒。默认值：分析 总结 好好想想 为什么 到底。",
+        "hint": "本批群聊消息命中任一短语后，本次回复改用焦点字数提醒。",
         "default": "分析 总结 好好想想 为什么 到底"
       },
       "normal_reply_max_chars": {
         "type": "int",
         "description": "常规回复字数",
-        "hint": "未命中焦点指令时注入的回复上限。默认值：20。",
+        "hint": "未命中焦点指令时注入的回复上限。",
         "default": 20
       },
       "focus_reply_max_chars": {
         "type": "int",
         "description": "焦点回复字数",
-        "hint": "命中焦点指令时注入的回复上限，不能小于常规回复字数。默认值：200。",
+        "hint": "命中焦点指令时注入的回复上限，不能小于常规回复字数。",
         "default": 200
       }
     }
@@ -208,61 +203,61 @@
       "enter_on_mention_only": {
         "type": "bool",
         "description": "仅点名入场",
-        "hint": "启用后，离场时只有点名消息（@或昵称）能入场；关闭后任何消息都会入场处理。",
+        "hint": "离场时只有点名消息能入场；关闭后任何消息都入场。",
         "default": true
       },
       "force_reply_when_summoned": {
         "type": "bool",
-        "description": "被点名时必须回应",
-        "hint": "启用后，只要消息命中人格名称或助理昵称，助理都会直接回复。",
+        "description": "被点名直接回复",
+        "hint": "命中人格名称或助理昵称时直接回复。",
         "default": true
       },
       "reply_even_not_questioned": {
         "type": "bool",
-        "description": "非提问和感兴趣也回应",
-        "hint": "关闭时，只有群友有求于助理或话题让助理感兴趣才会回复。开启时，即使只是打招呼或闲聊也会回应。",
+        "description": "非提问也回复",
+        "hint": "开启后打招呼、闲聊也会回应。",
         "default": true
       },
       "block_unapproved_wake_non_command": {
         "type": "bool",
-        "description": "拦截未批准的非命令点名",
-        "hint": "启用后，命中上游点名但未通过天使之心批准的非命令消息将被直接拦截。",
+        "description": "拦截未批准的点名",
+        "hint": "拦截命中上游点名但未获批准的非命令消息。",
         "default": false
       },
       "alias": {
         "type": "string",
-        "description": "助理昵称",
-        "hint": "用于点名匹配。多个昵称请用 '|' 分隔。",
+        "description": "点名昵称",
+        "hint": "用于点名匹配，多个用 '|' 分隔。",
         "default": "AI|助手"
       },
       "slap_words": {
         "type": "string",
         "description": "掌嘴词",
-        "hint": "当消息中包含这些词时，插件将进入静默状态。多个词请用 '|' 分隔。",
+        "hint": "消息命中则进入静默，多个用 '|' 分隔。",
         "default": "闭嘴"
       },
       "speak_words": {
         "type": "string",
         "description": "张嘴词",
-        "hint": "当消息中包含这些词时，插件将解除闭嘴状态。多个词请用 '|' 分隔。",
+        "hint": "消息命中则解除静默，多个用 '|' 分隔。",
         "default": "张嘴"
       },
       "silence_duration": {
         "type": "int",
-        "description": "闭嘴时长（秒）",
-        "hint": "触发掌嘴后，插件保持静默的时间。",
+        "description": "静默时长（秒）",
+        "hint": "触发掌嘴后保持静默的时间。",
         "default": 600
       },
       "poke_on_reply_enabled": {
         "type": "bool",
-        "description": "回复时戳触发者",
-        "hint": "仅群聊生效。决定回复时戳一下触发那条消息的人，仅 aiocqhttp 平台支持真戳，其他平台自动跳过。",
+        "description": "回复时戳一下",
+        "hint": "决定回复时戳触发消息的人，仅 aiocqhttp 支持真戳。",
         "default": true
       },
       "poke_on_reply_cooldown": {
         "type": "int",
-        "description": "戳触发者冷却（秒）",
-        "hint": "同一群内两次戳触发者的最短间隔，避免连续回复时刷屏。",
+        "description": "戳人冷却（秒）",
+        "hint": "同一群两次戳的最短间隔。",
         "default": 60
       }
     }
@@ -303,31 +298,31 @@
   },
   "jev_decision": {
     "type": "object",
-    "description": "[Jev 决策] Jev 决策模型设置",
-    "hint": "仅在「秘书决策方式」选择 jev 或 hybrid 时生效。Jev 只对输入 token 计费，输出免费；决策模型在插件配置页「Jev 决策」分组里配置。",
+    "description": "[Jev 判断] Jev 决策模型设置",
+    "hint": "仅在「秘书决策方式」选 jev/hybrid 时生效。",
     "items": {
       "enabled": {
         "type": "bool",
-        "description": "启用 Jev 决策",
-        "hint": "总开关。关闭时即使决策方式选了 jev/hybrid 也只走秘书模型。",
+        "description": "启用 Jev 判断",
+        "hint": "总开关，关闭时只走 LLM。",
         "default": false
       },
       "api_key": {
         "type": "string",
         "description": "Jev API Key",
-        "hint": "在所选网关的控制台创建，sk- 开头：jevmodel.org 控制台「API keys」（https://jevmodel.org/zh/docs/），或 TypeSafe（https://console.typesafe.ai）。Key 必须与接口地址属于同一个网关。",
+        "hint": "sk- 开头，在所选网关的控制台创建。",
         "default": ""
       },
       "base_url": {
         "type": "string",
         "description": "Jev 接口地址",
-        "hint": "网关根地址，实际请求路径由「接口协议」决定：systemone 走 {base_url}/v1/systemone，decisions 走 {base_url}/v1/decisions。常见网关：https://jevmodel.org（文档见 https://jevmodel.org/zh/docs/）、https://api.typesafe.ai，或中转站的自有域名。",
+        "hint": "网关根地址，请求路径由「接口协议」决定。",
         "default": "https://jevmodel.org"
       },
       "api_format": {
         "type": "string",
         "description": "接口协议",
-        "hint": "决定请求体与端点路径。systemone＝TypeSafe SystemOne 协议（jevmodel.org / api.typesafe.ai / StartLux，默认）；decisions＝OpenAI Decisions 协议（POST /v1/decisions，部分中转站用这个端点）。两者结构不同，插件内部会自动翻译，判定逻辑不用改。",
+        "hint": "systemone＝官方 Jev/TypeSafe；decisions＝OpenAI Decisions。部分中转站用后者。",
         "options": [
           "systemone",
           "decisions"
@@ -336,34 +331,30 @@
           "SystemOne（/v1/systemone）",
           "OpenAI Decisions（/v1/decisions）"
         ],
-        "subtitles": [
-          "官方 Jev / TypeSafe 协议：state + questions 映射。jevmodel.org、api.typesafe.ai、StartLux 的 SystemOne 通道都走这个。",
-          "OpenAI 新出的 Decisions 协议：input + questions 数组。若你的中转站文档写的是 /v1/decisions，选这个。"
-        ],
         "default": "systemone"
       },
       "model": {
         "type": "string",
         "description": "Jev 模型名",
-        "hint": "默认 jev-latest；jev-preview 支持图像输入与 Box 定位（实验性）。",
+        "hint": "默认 jev-latest；jev-preview 支持图像输入（实验性）。",
         "default": "jev-latest"
       },
       "timeout_sec": {
         "type": "float",
         "description": "请求超时（秒）",
-        "hint": "本轮全部尝试共享的总预算，同时也是等待上限（外层守卫再多留 1 秒）。单次 Jev 调用通常需要 2-4 秒，预算低于 5 秒会一直超时。建议 5-10 秒。",
+        "hint": "本轮所有尝试共享的总预算，建议 5-10 秒。",
         "default": 8.0
       },
       "retries": {
         "type": "int",
         "description": "失败重试次数",
-        "hint": "限流／上游故障（429/502/409）重试次数，退避等待装不进本轮预算时放弃。",
+        "hint": "限流或上游故障时重试。",
         "default": 1
       },
       "reply_mode": {
         "type": "string",
         "description": "概率判定方式",
-        "hint": "sample＝按概率抽样接话（默认）：抽一个随机数落在概率内就接话，回复率随置信度平滑变化，0.3 的消息有 30% 机会接话；threshold＝概率超过阈值才接话，行为可复现，但阈值附近是硬跳变（0.59 不接、0.61 就接）。两种口径下「非提问也回复」与「被追问 / 有兴趣」这两道证据门都照旧生效。",
+        "hint": "sample＝按概率平滑接话（默认）；threshold＝超过阈值才接话。",
         "options": [
           "sample",
           "threshold"
@@ -372,40 +363,36 @@
           "按概率抽样（平滑）",
           "按阈值（可复现）"
         ],
-        "subtitles": [
-          "回复率随 Jev 给出的概率平滑变化，没有阈值处的跳变；代价是同一条消息两次判断可能不同（抽样值会写进日志）。",
-          "概率超过阈值才接话，行为可复现、便于复盘；阈值附近的概率差异会造成明显的接话/不接话跳变。"
-        ],
         "default": "sample"
       },
       "reply_threshold": {
         "type": "float",
-        "description": "回复概率阈值（threshold 模式）",
-        "hint": "仅在「概率判定方式」选 threshold 时生效：Jev 判定「应当回复」的 noul 概率达到该值才回复。默认值：0.6。选 sample 时这个值不参与判定，只在界面上留作参考。",
+        "description": "接话阈值",
+        "hint": "threshold 模式下：接话概率达到该值才接。",
         "default": 0.6
       },
       "questioned_threshold": {
         "type": "float",
         "description": "被追问阈值",
-        "hint": "Jev 判定「消息在对助理说话」的 noul 概率达到该值才算被追问。这是证据门，两种判定方式下都照旧生效。默认值：0.5。",
+        "hint": "「被追问」的概率达到该值才算被追问。",
         "default": 0.5
       },
       "interesting_threshold": {
         "type": "float",
         "description": "话题价值阈值",
-        "hint": "Jev 判定「话题值得参与」的 noul 概率达到该值才算有兴趣。这是证据门，两种判定方式下都照旧生效。默认值：0.5。",
+        "hint": "「话题值得参与」的概率达到该值才算有兴趣。",
         "default": 0.5
       },
       "max_state_chars": {
         "type": "int",
         "description": "发送上下文长度上限",
-        "hint": "发送给 Jev 的整段文本裁剪上限，超出部分截断更早的历史。默认值：1200。",
+        "hint": "超出部分截断更早的历史。",
         "default": 1200
       },
       "history_rounds": {
         "type": "int",
         "description": "带入的历史条数",
-        "hint": "除当前消息外，额外带入多少条历史消息供 Jev 判断。默认值：4。",
+        "hint": "除当前消息外额外带入的历史条数。",
         "default": 4
       }
     }

@@ -1,28 +1,13 @@
 #!/usr/bin/env python3
 """Jev 网关连通性诊断：告诉你「500 到底是谁的问题」。
 
-用法：
-
     python scripts/probe_jev.py --base-url https://api.example.com \
-        --api-key sk-xxx --model your-model
+        --api-key sk-xxx --model your-model [--api-format decisions]
 
-    # 中转站用的是 OpenAI Decisions 端点时
-    python scripts/probe_jev.py --base-url https://api.example.com \
-        --api-key sk-xxx --model your-model --api-format decisions
+发两次最小请求（choice、noul 各一次），把结果翻译成结论：Key 无效 / 余额不足 /
+路径不对 / 模型没绑通道 / 请求体被拒 / 上游任务失败。
 
-脚本会按文档格式（POST {base_url}/v1/systemone）发两次最小请求：
-一次 choice、一次 noul，然后把结果翻译成结论：
-
-- ✅ 网关正常：能拿到答案；
-- ❌ 401：Key 无效或没有这个网关的权限；
-- ❌ 402：余额不足；
-- ❌ 404：路径不对（这个网关不是 SystemOne 兼容的）；
-- ❌ 400「not served by this plugin」：模型名对，但这个模型没有绑定到该端点的通道；
-- ❌ 422：请求体被拒——按提示改载荷；
-- ❌ 5xx：网关收到了请求、校验也过了，但**上游任务失败**——问题在网关/上游，不在请求体。
-
-最后一种最容易被误判成「插件写错了」，所以单独用两种问题类型各试一次：
-两种都 5xx，就基本可以确定不是自己的锅。
+两种问题类型都 5xx，就说明是网关上游挂了，不是自己的请求体。
 """
 
 from __future__ import annotations
