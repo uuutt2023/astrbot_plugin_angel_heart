@@ -234,7 +234,10 @@ def new_idempotency_key() -> str:
 
 
 # 文档的错误码语义（见「错误与重试」）：429 与 502 用退避重试，其余不重试。
-RETRYABLE_STATUS = {409, 429, 502, 503, 529}
+# 可重试的 HTTP 状态：都是「请求本身没问题、但这一轮没成」的情况。
+# 500 要算进去：很多中转网关在��游报错时返回 500 而不是 502，
+# 把它当不可重试会让一次偶发抖动直接变成整轮失败。
+RETRYABLE_STATUS = {409, 429, 500, 502, 503, 529}
 
 _STATUS_BY_HTTP = {
     401: "unauthorized",
@@ -242,6 +245,7 @@ _STATUS_BY_HTTP = {
     409: "conflict",
     422: "invalid_request",
     429: "rate_limited",
+    500: "upstream_error",
     502: "upstream_error",
     503: "overloaded",
     529: "overloaded",
@@ -254,13 +258,27 @@ def error_status(http_status: int) -> str:
 
 
 def parse_error(payload) -> tuple[str, str]:
-    """解析文档的错误包 {"error": {"type": ..., "message": ...}}。"""
+    """解析错误包，返回 (类型, 消息)。
+
+    文档给的是 ``{"error": {"type": ..., "message": ...}}``，但中转网关
+    常常直接返回字符串（``{"error": "Task request failed"}``）或者把
+    message 放在顶层——这些形态都要能读出来，否则日志里只有「HTTP 500」，
+    看不到上游真正说了什么。
+    """
     if not isinstance(payload, dict):
         return "", ""
     error = payload.get("error")
-    if not isinstance(error, dict):
-        return "", ""
-    return str(error.get("type") or ""), str(error.get("message") or "")
+    if isinstance(error, str):
+        # {"error": "Task request failed"}
+        return "", error.strip()
+    if isinstance(error, dict):
+        return str(error.get("type") or ""), str(error.get("message") or "")
+    # {"message": "..."} / {"detail": "..."}
+    for key in ("message", "detail", "msg"):
+        value = payload.get(key)
+        if isinstance(value, str) and value.strip():
+            return "", value.strip()
+    return "", ""
 
 
 class JevClient:
@@ -484,7 +502,7 @@ class JevClient:
                         delay = 300
                     elif response.status == 429:
                         delay = retry_after(response.headers.get("Retry-After")) or 60
-                    elif response.status in (502, 503, 529):
+                    elif response.status in (500, 502, 503, 529):
                         # 上游故障：文档说明已退款，短暂退避后重试是安全的
                         delay = 2
         except asyncio.CancelledError:

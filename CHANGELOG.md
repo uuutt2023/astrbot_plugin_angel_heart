@@ -3,6 +3,10 @@
 ## 未发布
 
 ### Added
+- **Jev 网关连通性诊断脚本**：`scripts/probe_jev.py` 按文档格式发两次最小请求
+  （choice 与 noul 各一次），把结果翻译成结论：Key 无效 / 余额不足 / 路径不对 /
+  模型没绑通道 / 请求体被拒 / 上游任务失败。两种问题类型都是 5xx 时，会直接给出
+  「不是你的请求体有问题」的判断，免得把网关故障误当成插件写错了。`scripts/probe_jev.py`。
 - **秘书决策后端可切换到 Jev 决策模型**：插件配置页新增「秘书决策方式」下拉（`llm` / `jev` / `hybrid`）。`jev` 只用 [Jev 决策模型](https://jevmodel.org/zh/docs/) 做类型化判断（是否接话 / 是否被追问 / 话题价值 / 回复策略），不调用大模型；`hybrid` 先用 Jev 廉价门控，通过后才调用秘书模型产出策略，省 token。未配置 Jev 时自动回落到轻量秘书模型，行为与原来一致。`core/jev_decider.py`、`core/jev_transport.py`、`roles/secretary.py`、`core/config_manager.py`。
 - **Jev 决策配置分组**：插件配置页新增「Jev 决策」分组（开关、接口地址、API Key、模型名、超时、重试次数与三个概率阈值）。两个网关请求体一致，切换只需改接口地址并换上对应网关的 Key；默认网关取 `https://jevmodel.org`（`api.typesafe.ai` 在部分区域返回 451）。`_conf_schema.json`。
 - **可视化配置支持枚举下拉**：自带 WebUI 的 `SchemaForm.vue` 增加 `options` 渲染分支，展示文本取 `labels`、选项说明取 `subtitles`（与 AstrBot 原生配置页一致），并重建 `pages/chat-config/` 产物。`webui/src/SchemaForm.vue`、`webui/src/schema.ts`。
@@ -11,6 +15,12 @@
 - 补测试：Jev 状态拼装与裁剪、限额预检、概率映射与正向条件、三条决策分支、可视化配置可选性与取值校验、两种判定方式的分布与确定性、字数缩放、日志取整（`tests/test_jev_decision_backend.py`）。
 
 ### Fixed
+- **Jev 网关返回 500 时能看懂、能重试**：中转网关在「上游任务失败」时经常返回 500
+  而不是 502，此前传输层把 500 当成不可重试的未知错误，一次偶发抖动就会让整轮判断直接
+  失败；现在 500 归入「上游故障」并参与重试。同时错误体解析支持 `{"error": "..."}`
+  字符串与顶层 `message` 两种形态——此前只认 `{"error": {...}}` 对象，字符串形态的错误
+  会被整条吞掉，日志里只剩「HTTP 500」，看不到上游真正说了什么。
+  `core/jev_transport.py`、`tests/test_jev_decision_backend.py`。
 - 日志里的 Jev 概率改为保留 3 位小数：上游给的是模型原始浮点（例如 `0.11508464306322369`），尾巴全是浮点噪声，概率的有效精度只有 2~3 位小数。`roles/secretary.py`。
 
 ### Performance

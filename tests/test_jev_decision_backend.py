@@ -1138,6 +1138,39 @@ class TestJevTransportContract:
         assert kind == "authentication_error"
         assert message == "Invalid key"
 
+    def test_error_body_as_plain_string(self):
+        """中转网关常把 error 写成字符串（{"error": "Task request failed"}）。
+
+        只认对象形态的话，日志里只剩「HTTP 500」，看不到上游说了什么。
+        """
+        from astrbot_plugin_angel_heart.core.jev_transport import parse_error
+
+        kind, message = parse_error({"error": "Task request failed"})
+        assert kind == ""
+        assert message == "Task request failed"
+
+    def test_error_body_top_level_message(self):
+        from astrbot_plugin_angel_heart.core.jev_transport import parse_error
+
+        kind, message = parse_error({"message": "invalid api key"})
+        assert message == "invalid api key"
+
+    def test_http_500_is_upstream_error(self):
+        """500 是上游任务失败，不是「请求写错了」。"""
+        from astrbot_plugin_angel_heart.core.jev_transport import error_status
+
+        assert error_status(500) == "upstream_error"
+
+    def test_http_500_is_retryable(self):
+        """很多网关在上游报错时返回 500 而不是 502——当不可重试会让偶发抖动直接失败。"""
+        from astrbot_plugin_angel_heart.core.jev_transport import RETRYABLE_STATUS
+
+        assert 500 in RETRYABLE_STATUS
+        assert 502 in RETRYABLE_STATUS
+        # 请求本身有问题的状态不该重试
+        for status in (400, 401, 402, 403, 404, 422):
+            assert status not in RETRYABLE_STATUS
+
     def test_budget_is_shared_single_source(self):
         """预算口径统一在 budget_seconds：传输层、判读层、调用方共用。"""
         from astrbot_plugin_angel_heart.core.jev_transport import budget_seconds
