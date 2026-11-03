@@ -39,6 +39,21 @@ from ..core.utils.message_hits import (
 )
 from ..core.utils.message_utils import serialize_content_parts
 
+
+def _scale_limit_by_confidence(limit: int, confidence: float) -> int:
+    """按决策置信度缩放字数上限：把握越小，允许说的越少。
+
+    置信度 0 表示没有置信度概念（LLM 路径），此时保持原上限不变。
+    缩放系数取 0.5~1.0：置信度 0 → 半数额度，1 → 全额。
+    """
+    if not limit or limit <= 0:
+        return limit
+    if not confidence or confidence <= 0:
+        return limit
+    factor = 0.5 + 0.5 * min(1.0, float(confidence))
+    return max(1, int(round(limit * factor)))
+
+
 # 导入状态枚举
 from ..core.angel_heart_status import AngelHeartStatus, StatusChecker
 from ..core.debounce_manager import PROCESS, KILL
@@ -1966,31 +1981,59 @@ class FrontDesk:
                 return True
         return False
 
-    def _build_reply_length_reminder(self, focus: bool, chat_id: str = "") -> str:
-        """构建常规/焦点字数系统提醒。"""
+    def _decision_confidence(self, event) -> float:
+        """取秘书决策的置信度（Jev 路径才有；LLM 路径为 0）。"""
+        raw = getattr(event, "angelheart_context", None)
+        if not raw:
+            return 0.0
+        try:
+            context = json.loads(raw)
+            decision = context.get("secretary_decision") or {}
+            return float(decision.get("confidence") or 0.0)
+        except (json.JSONDecodeError, TypeError, ValueError, AttributeError):
+            return 0.0
+
+    def _build_reply_length_reminder(
+        self, focus: bool, chat_id: str = "", confidence: float = 0.0
+    ) -> str:
+        """构建常规/焦点字数系统提醒。
+
+        ``confidence`` 是秘书的决策置信度（Jev 路径才有）：把握越小，允许说的
+        越少——把概率用在「发言程度」上，而不是只用它决定「开不开口」。
+        置信度为 0（LLM 路径没有这个概念）时保持原样，不缩放。
+        """
         cm = self.config_manager.for_chat(chat_id)
         normal_limit = int(getattr(cm, "normal_reply_max_chars", 20) or 20)
         focus_limit = int(getattr(cm, "focus_reply_max_chars", 200) or 200)
         normal_limit = max(1, normal_limit)
         focus_limit = max(normal_limit, focus_limit)
+        normal_limit = _scale_limit_by_confidence(normal_limit, confidence)
+        focus_limit = _scale_limit_by_confidence(focus_limit, confidence)
+        # 把握不大时额外压一句，避免它硬凑字数
+        tentative = 0.0 < confidence < 0.5
         if focus:
-            return (
+            text = (
                 f"请认真回答：先给结论，再给必要依据，长度以 {focus_limit} 字左右为宜。"
                 "确实需要时可以超出，重点是讲清楚，不要注水、不要重复。"
                 "如果是分析的，不要正反面讲解，直接给出你认为的最佳结论，只给出必要的关键推理。"
             )
-        return (
-            f"回复尽量简短，通常一两句话、{normal_limit} 字左右即可说清。"
-            "但如果问题复杂度高、三言两语说不清，或者用户明确要求多说一些，"
-            "可以适度超出，以讲清楚为准。"
-            "不要正反面讲解，直接给出你认为的最佳结论，不需要推理过程。"
-        )
+        else:
+            text = (
+                f"回复尽量简短，通常一两句话、{normal_limit} 字左右即可说清。"
+                "但如果问题复杂度高、三言两语说不清，或者用户明确要求多说一些，"
+                "可以适度超出，以讲清楚为准。"
+                "不要正反面讲解，直接给出你认为的最佳结论，不需要推理过程。"
+            )
+        if tentative:
+            text += "把握不大，只说最关键的一句就好，不要展开。"
+        return text
 
     def _build_temporary_reply_length_context(
         self,
         chat_id: str,
         recent_dialogue: List[Dict],
         prompt_recent_dialogue: List[Dict],
+        confidence: float = 0.0,
     ) -> Dict[str, Any] | None:
         """群聊回复时注入字数提醒；私聊不注入。"""
         if not self._is_group_chat(chat_id):
@@ -2007,7 +2050,7 @@ class FrontDesk:
                 focus = True
                 break
 
-        reminder = self._build_reply_length_reminder(focus, chat_id)
+        reminder = self._build_reply_length_reminder(focus, chat_id, confidence)
         return {
             "role": "user",
             "content": [
@@ -2396,6 +2439,7 @@ class FrontDesk:
             chat_id,
             context_recent_dialogue,
             prompt_recent_dialogue,
+            confidence=self._decision_confidence(event),
         )
         if length_context:
             new_contexts.append(length_context)

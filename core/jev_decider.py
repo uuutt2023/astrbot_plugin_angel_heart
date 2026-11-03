@@ -17,6 +17,7 @@ Jev 不生成文本，只回答类型化问题，所以这里的分工是：
 from __future__ import annotations
 
 import asyncio
+import random
 import time
 from typing import Any, Dict, List, Optional
 
@@ -34,6 +35,36 @@ STRATEGY_LABELS = {
     "greet": "简单回应",
     "stay_silent": "保持沉默",
 }
+
+# 判定方式：sample＝按概率抽样（回复率随置信度平滑变化）；threshold＝超过阈值才接话。
+REPLY_MODE_SAMPLE = "sample"
+REPLY_MODE_THRESHOLD = "threshold"
+REPLY_MODES = (REPLY_MODE_SAMPLE, REPLY_MODE_THRESHOLD)
+
+
+def decide_should_reply(
+    probability: Optional[float], threshold: float, mode: str = REPLY_MODE_SAMPLE
+) -> tuple[bool, float]:
+    """把「应当回复」的概率变成接话与否。
+
+    两种口径：
+
+    - ``sample``：抽一个 [0,1) 的随机数，落在概率以内就接话。
+      回复率随置信度平滑变化——0.3 的消息有 30% 机会接话，0.9 的有 90%，
+      没有阈值处的跳变。
+    - ``threshold``：概率超过阈值才接话。行为可复现，但阈值附近是硬跳变
+      （0.59 不接、0.61 就接）。
+
+    Returns:
+        tuple[bool, float]: (是否接话, 本次抽样值；threshold 口径恒为 0.0)
+    """
+    if probability is None:
+        return False, 0.0
+    if mode != REPLY_MODE_SAMPLE:
+        return probability >= threshold, 0.0
+    draw = random.random()
+    return draw <= probability, draw
+
 
 # 传输层失败状态 → 一句可读原因。
 _STATUS_REASON = {
@@ -384,12 +415,17 @@ def build_decision(
     reply_threshold = _float(cfg.get("reply_threshold"), 0.6)
     questioned_threshold = _float(cfg.get("questioned_threshold"), 0.5)
     interesting_threshold = _float(cfg.get("interesting_threshold"), 0.5)
+    mode = str(cfg.get("reply_mode") or REPLY_MODE_SAMPLE).strip() or REPLY_MODE_SAMPLE
+    if mode not in REPLY_MODES:
+        mode = REPLY_MODE_SAMPLE
 
     p_reply = probabilities.get("should_reply")
     p_questioned = probabilities.get("is_questioned")
     p_interesting = probabilities.get("is_interesting")
 
-    should_reply = p_reply is not None and p_reply >= reply_threshold
+    # 主判定走判定方式（抽样 / 阈值）；证据信号仍用阈值，
+    # 它们回答的是「有没有正当理由」，不是「这次要不要开口」。
+    should_reply, draw = decide_should_reply(p_reply, reply_threshold, mode)
     is_questioned = p_questioned is not None and p_questioned >= questioned_threshold
     is_interesting = p_interesting is not None and p_interesting >= interesting_threshold
 
@@ -408,6 +444,12 @@ def build_decision(
         entities=[],
         facts=[],
         keywords=[],
+        confidence=float(p_reply) if p_reply is not None else 0.0,
+    )
+    logger.debug(
+        f"AngelHeart[Jev]: 判定方式={mode} 概率={p_reply} "
+        f"抽样={round(draw, 4) if draw else 0.0} 阈值={reply_threshold} "
+        f"→ 回复={decision.should_reply}"
     )
 
     # 正向条件：与 llm_analyzer 同一套规则

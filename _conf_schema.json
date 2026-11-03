@@ -304,7 +304,7 @@
   "jev_decision": {
     "type": "object",
     "description": "[Jev 决策] Jev 决策模型设置",
-    "hint": "仅在「秘书决策方式」选择 jev 或 hybrid 时生效。Jev 只对输入 token 计费，输出免费。",
+    "hint": "仅在「秘书决策方式」选择 jev 或 hybrid 时生效。Jev 只对输入 token 计费，输出免费；决策模型在插件配置页「Jev 决策」分组里配置。",
     "items": {
       "enabled": {
         "type": "bool",
@@ -342,22 +342,40 @@
         "hint": "限流／上游故障（429/502/409）重试次数，退避等待装不进本轮预算时放弃。",
         "default": 1
       },
+      "reply_mode": {
+        "type": "string",
+        "description": "概率判定方式",
+        "hint": "sample＝按概率抽样接话（默认）：抽一个随机数落在概率内就接话，回复率随置信度平滑变化，0.3 的消息有 30% 机会接话；threshold＝概率超过阈值才接话，行为可复现，但阈值附近是硬跳变（0.59 不接、0.61 就接）。两种口径下「非提问也回复」与「被追问 / 有兴趣」这两道证据门都照旧生效。",
+        "options": [
+          "sample",
+          "threshold"
+        ],
+        "labels": [
+          "按概率抽样（平滑）",
+          "按阈值（可复现）"
+        ],
+        "subtitles": [
+          "回复率随 Jev 给出的概率平滑变化，没有阈值处的跳变；代价是同一条消息两次判断可能不同（抽样值会写进日志）。",
+          "概率超过阈值才接话，行为可复现、便于复盘；阈值附近的概率差异会造成明显的接话/不接话跳变。"
+        ],
+        "default": "sample"
+      },
       "reply_threshold": {
         "type": "float",
-        "description": "回复概率阈值",
-        "hint": "Jev 判定「应当回复」的 noul 概率达到该值才回复。默认值：0.6。",
+        "description": "回复概率阈值（threshold 模式）",
+        "hint": "仅在「概率判定方式」选 threshold 时生效：Jev 判定「应当回复」的 noul 概率达到该值才回复。默认值：0.6。选 sample 时这个值不参与判定，只在界面上留作参考。",
         "default": 0.6
       },
       "questioned_threshold": {
         "type": "float",
         "description": "被追问阈值",
-        "hint": "Jev 判定「消息在对助理说话」的 noul 概率达到该值才算被追问。默认值：0.5。",
+        "hint": "Jev 判定「消息在对助理说话」的 noul 概率达到该值才算被追问。这是证据门，两种判定方式下都照旧生效。默认值：0.5。",
         "default": 0.5
       },
       "interesting_threshold": {
         "type": "float",
         "description": "话题价值阈值",
-        "hint": "Jev 判定「话题值得参与」的 noul 概率达到该值才算有兴趣。默认值：0.5。",
+        "hint": "Jev 判定「话题值得参与」的 noul 概率达到该值才算有兴趣。这是证据门，两种判定方式下都照旧生效。默认值：0.5。",
         "default": 0.5
       },
       "max_state_chars": {

@@ -6,13 +6,43 @@ AngelHeart 插件 - 秘书角色 (Secretary)
 import asyncio
 from typing import Dict, List
 
-from ..core.jev_decider import JevDecider, build_decision
+from ..core.jev_decider import (
+    REPLY_MODE_SAMPLE,
+    JevDecider,
+    build_decision,
+    decide_should_reply,
+)
 from ..core.llm_analyzer import LLMAnalyzer
 from ..models.analysis_result import SecretaryDecision
 from ..core.angel_heart_status import AngelHeartStatus
 from astrbot.api.event import AstrMessageEvent
 
 from astrbot.api import logger
+
+
+def _round_prob(value):
+    """单个概率取 3 位小数；缺失值原样返回（不炸）。"""
+    try:
+        return round(float(value), 3)
+    except (TypeError, ValueError):
+        return value
+
+
+def _round_probs(probabilities) -> dict:
+    """日志里的概率保留 3 位小数。
+
+    上游给的是模型原始浮点（例如 0.11508464306322369），尾巴全是浮点噪声，
+    概率的有效精度只有 2~3 位小数；日志按原样打印既难读也会误导。
+    """
+    if not isinstance(probabilities, dict):
+        return {}
+    out = {}
+    for key, value in probabilities.items():
+        try:
+            out[key] = round(float(value), 3)
+        except (TypeError, ValueError):
+            out[key] = value
+    return out
 
 
 class Secretary:
@@ -151,13 +181,14 @@ class Secretary:
 
             backend = self.config_manager.decision_backend
             jev_ready = self.config_manager.jev_decision_enabled
+            gate_confidence = 0.0
             if backend in ("jev", "hybrid") and jev_ready:
                 if backend == "jev":
                     return await self._decide_by_jev(
                         recent_dialogue, db_history, chat_id, work_ledger_text
                     )
                 # hybrid：Jev 先做廉价门控，没通过就不必再花钱调秘书模型
-                gate = await self._jev_gate(
+                gate, gate_confidence = await self._jev_gate(
                     recent_dialogue, db_history, chat_id, work_ledger_text
                 )
                 if gate is not None:
@@ -170,6 +201,11 @@ class Secretary:
                 chat_id=chat_id,
                 work_ledger_text=work_ledger_text,
             )
+
+            # hybrid 模式：最终决策由秘书模型给出，但「该不该开口」的把握来自 Jev，
+            # 把这个把握带上，字数提醒才能按置信度缩放。
+            if gate_confidence and decision.confidence <= 0:
+                decision.confidence = gate_confidence
 
             return decision
 
@@ -212,7 +248,7 @@ class Secretary:
         )
         logger.info(
             f"AngelHeart[{chat_id}]: Jev 决策完成 | 回复={decision.should_reply} "
-            f"策略={decision.reply_strategy} 概率={raw.get('probabilities')}"
+            f"策略={decision.reply_strategy} 概率={_round_probs(raw.get('probabilities'))}"
         )
         return decision
 
@@ -222,11 +258,12 @@ class Secretary:
         db_history: List[Dict],
         chat_id: str,
         work_ledger_text: str,
-    ) -> SecretaryDecision | None:
+    ) -> tuple[SecretaryDecision | None, float]:
         """hybrid 模式的廉价门控：Jev 认为没戏就不必再调秘书模型。
 
         Returns:
-            None 表示放行（继续走秘书模型）；否则返回「不回复」的决策。
+            tuple: (决策, 门控概率)。决策为 None 表示放行（继续走秘书模型）；
+            门控概率用于让后续的发言程度跟着 Jev 的把握走。
         """
         cfg = self.config_manager.jev_decision
         raw = await self.jev_decider.decide(
@@ -241,25 +278,36 @@ class Secretary:
             logger.warning(
                 f"AngelHeart[{chat_id}]: Jev 门控失败，放行给秘书模型：{raw.get('error')}"
             )
-            return None
+            return None, 0.0
 
         probabilities = raw.get("probabilities") or {}
         p_reply = probabilities.get("should_reply")
         threshold = _float(cfg.get("reply_threshold"), 0.6)
-        if p_reply is not None and p_reply >= threshold:
-            logger.debug(f"AngelHeart[{chat_id}]: Jev 门控放行（概率 {p_reply}）")
-            return None
+        mode = str(cfg.get("reply_mode") or REPLY_MODE_SAMPLE).strip() or REPLY_MODE_SAMPLE
+        passed, draw = decide_should_reply(p_reply, threshold, mode)
+        confidence = float(p_reply) if p_reply is not None else 0.0
+        if passed:
+            logger.debug(
+                f"AngelHeart[{chat_id}]: Jev 门控放行（概率 {_round_prob(p_reply)}"
+                f"，抽样 {round(draw, 4)}）"
+            )
+            return None, confidence
 
         logger.info(
-            f"AngelHeart[{chat_id}]: Jev 门控未通过（概率 {p_reply} < {threshold}），本轮不回复"
+            f"AngelHeart[{chat_id}]: Jev 门控未通过（概率 {_round_prob(p_reply)}，"
+            f"方式 {mode}），本轮不回复"
         )
-        return SecretaryDecision(
-            should_reply=False,
-            reply_strategy="继续观察",
-            topic="未知",
-            entities=[],
-            facts=[],
-            keywords=[],
+        return (
+            SecretaryDecision(
+                should_reply=False,
+                reply_strategy="继续观察",
+                topic="未知",
+                entities=[],
+                facts=[],
+                keywords=[],
+                confidence=confidence,
+            ),
+            0.0,
         )
 
     def _alias_for(self, chat_id: str) -> str:

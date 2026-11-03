@@ -6,7 +6,12 @@
 - **秘书决策后端可切换到 Jev 决策模型**：插件配置页新增「秘书决策方式」下拉（`llm` / `jev` / `hybrid`）。`jev` 只用 [Jev 决策模型](https://jevmodel.org/zh/docs/) 做类型化判断（是否接话 / 是否被追问 / 话题价值 / 回复策略），不调用大模型；`hybrid` 先用 Jev 廉价门控，通过后才调用秘书模型产出策略，省 token。未配置 Jev 时自动回落到轻量秘书模型，行为与原来一致。`core/jev_decider.py`、`core/jev_transport.py`、`roles/secretary.py`、`core/config_manager.py`。
 - **Jev 决策配置分组**：插件配置页新增「Jev 决策」分组（开关、接口地址、API Key、模型名、超时、重试次数与三个概率阈值）。两个网关请求体一致，切换只需改接口地址并换上对应网关的 Key；默认网关取 `https://jevmodel.org`（`api.typesafe.ai` 在部分区域返回 451）。`_conf_schema.json`。
 - **可视化配置支持枚举下拉**：自带 WebUI 的 `SchemaForm.vue` 增加 `options` 渲染分支，展示文本取 `labels`、选项说明取 `subtitles`（与 AstrBot 原生配置页一致），并重建 `pages/chat-config/` 产物。`webui/src/SchemaForm.vue`、`webui/src/schema.ts`。
-- 补测试：Jev 状态拼装与裁剪、限额预检、概率映射与正向条件、三条决策分支、可视化配置可选性与取值校验（`tests/test_jev_decision_backend.py`）。
+- **概率判定方式可下拉选择（sample / threshold）**：Jev 的 noul 答案就是「该接话」的概率，插件新增「概率判定方式」下拉。`sample`（默认）按概率抽样接话，回复率随置信度平滑变化，没有阈值处的跳变；`threshold` 保持旧口径（超过阈值才接话，行为可复现）。两种口径下「非提问也回复」「被追问 / 有兴趣」两道证据门都照旧生效，抽样值写进日志便于复盘。`core/jev_decider.py`、`roles/secretary.py`、`_conf_schema.json`。
+- **概率同时管「说多少」**：秘书决策带上 `confidence`，Jev 路径下把握越小，允许的回复字数越少（系数 0.5~1.0），把握不足 0.5 时额外提示「只说最关键的一句」；LLM 路径没有置信度概念，字数行为保持原样。`models/analysis_result.py`、`roles/front_desk.py`。
+- 补测试：Jev 状态拼装与裁剪、限额预检、概率映射与正向条件、三条决策分支、可视化配置可选性与取值校验、两种判定方式的分布与确定性、字数缩放、日志取整（`tests/test_jev_decision_backend.py`）。
+
+### Fixed
+- 日志里的 Jev 概率改为保留 3 位小数：上游给的是模型原始浮点（例如 `0.11508464306322369`），尾巴全是浮点噪声，概率的有效精度只有 2~3 位小数。`roles/secretary.py`。
 
 ### Performance
 - **历史上下文格式化提速 7.4 倍**：`LLMAnalyzer._format_conversation_history` 原先在循环体内逐条消息调 `for_chat()` 取昵称（最多 50 次），每���次都要重新解析群模板绑定；昵称与整段历史无关，提到循环外只取一次。50 条历史的格式化耗时 610 µs → 82 µs。`core/llm_analyzer.py`。

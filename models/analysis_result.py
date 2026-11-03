@@ -14,3 +14,8 @@ class SecretaryDecision(BaseModel):
     entities: List[str] = Field(default=[], description="实体列表，优先级最高的发言人ID，其次是其他对话中的实体（包含但不限于人物、话题、物品、时间、地点、活动等）")
     facts: List[str] = Field(default=[], description="极简日志模式。只保留'谁 做了 什么'或'谁 提议 什么'。单句禁止超过15个字，禁止形容词")
     keywords: List[str] = Field(default=[], description="1-3个核心搜索词")
+    confidence: float = Field(
+        default=0.0,
+        description="决策置信度 0-1：Jev 路径下是「应当回复」的 noul 概率，"
+        "LLM 路径下无此概念（为 0，表示不按置信度缩放发言程度）",
+    )

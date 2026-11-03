@@ -44,6 +44,8 @@ def make_config(backend: str = "llm", jev_enabled: bool = True, **jev_overrides)
         "model": "jev-latest",
         "timeout_sec": 8.0,
         "retries": 1,
+        # 夹具固定用阈值口径：阈值判定是确定的，抽样口径要另行测分布
+        "reply_mode": "threshold",
         "reply_threshold": 0.6,
         "questioned_threshold": 0.5,
         "interesting_threshold": 0.5,
@@ -249,7 +251,9 @@ class TestBuildDecision:
         from astrbot_plugin_angel_heart.core.jev_decider import build_decision
 
         decision = build_decision(
-            self._raw(reply=0.9, questioned=0.8), [make_msg("A", "你好")], {}
+            self._raw(reply=0.9, questioned=0.8),
+            [make_msg("A", "你好")],
+            {"reply_mode": "threshold"},
         )
         assert decision.should_reply is True
         assert decision.is_questioned is True
@@ -259,7 +263,9 @@ class TestBuildDecision:
         from astrbot_plugin_angel_heart.core.jev_decider import build_decision
 
         decision = build_decision(
-            self._raw(reply=0.5, questioned=0.9), [make_msg("A", "你好")], {}
+            self._raw(reply=0.5, questioned=0.9),
+            [make_msg("A", "你好")],
+            {"reply_mode": "threshold"},
         )
         assert decision.should_reply is False
 
@@ -269,7 +275,7 @@ class TestBuildDecision:
         decision = build_decision(
             {"ok": True, "probabilities": {}, "reply_strategy": "answer_question"},
             [make_msg("A", "你好")],
-            {},
+            {"reply_mode": "threshold"},
         )
         assert decision.should_reply is False
 
@@ -280,7 +286,7 @@ class TestBuildDecision:
         decision = build_decision(
             self._raw(reply=0.9, questioned=0.1, interesting=0.1),
             [make_msg("A", "闲聊")],
-            {},
+            {"reply_mode": "threshold"},
         )
         assert decision.should_reply is False
 
@@ -290,7 +296,7 @@ class TestBuildDecision:
         decision = build_decision(
             self._raw(reply=0.9, questioned=0.1, interesting=0.1),
             [make_msg("A", "闲聊")],
-            {},
+            {"reply_mode": "threshold"},
             reply_even_not_questioned=True,
         )
         assert decision.should_reply is True
@@ -299,7 +305,9 @@ class TestBuildDecision:
         from astrbot_plugin_angel_heart.core.jev_decider import build_decision
 
         decision = build_decision(
-            self._raw(strategy="join_topic"), [make_msg("A", "你好")], {}
+            self._raw(strategy="join_topic"),
+            [make_msg("A", "你好")],
+            {"reply_mode": "threshold"},
         )
         assert decision.reply_strategy == "加入话题"
 
@@ -307,14 +315,18 @@ class TestBuildDecision:
         from astrbot_plugin_angel_heart.core.jev_decider import build_decision
 
         decision = build_decision(
-            self._raw(strategy="stay_silent"), [make_msg("A", "你好")], {}
+            self._raw(strategy="stay_silent"),
+            [make_msg("A", "你好")],
+            {"reply_mode": "threshold"},
         )
         assert decision.should_reply is False
 
     def test_topic_falls_back_to_latest_message(self):
         from astrbot_plugin_angel_heart.core.jev_decider import build_decision
 
-        decision = build_decision(self._raw(), [make_msg("A", "讲个笑话")], {})
+        decision = build_decision(
+            self._raw(), [make_msg("A", "讲个笑话")], {"reply_mode": "threshold"}
+        )
         assert decision.topic == "讲个笑话"
 
     def test_probability_parser_rejects_invalid(self):
@@ -639,6 +651,308 @@ class TestVisualConfigSelectable:
             api.save_config, {"values": {"jev_decision": {"api_key": "sk-x"}}}
         )
         assert result["status"] == "ok"
+
+
+class TestReplyModeSampling:
+    """概率判定方式：抽样（平滑）vs 阈值（可复现）。"""
+
+    def _raw(self, reply=0.9, questioned=0.8, interesting=0.3, strategy="answer_question"):
+        return {
+            "ok": True,
+            "probabilities": {
+                "should_reply": reply,
+                "is_questioned": questioned,
+                "is_interesting": interesting,
+            },
+            "reply_strategy": strategy,
+        }
+
+    def test_threshold_mode_is_deterministic(self):
+        from astrbot_plugin_angel_heart.core.jev_decider import build_decision
+
+        cfg = {"reply_mode": "threshold", "reply_threshold": 0.6}
+        for _ in range(20):
+            decision = build_decision(
+                self._raw(reply=0.9), [make_msg("A", "你好")], cfg
+            )
+            assert decision.should_reply is True
+
+        for _ in range(20):
+            decision = build_decision(
+                self._raw(reply=0.5), [make_msg("A", "你好")], cfg
+            )
+            assert decision.should_reply is False
+
+    def test_sample_mode_follows_probability(self):
+        """抽样口径下，概率越大越容易接话。"""
+        from astrbot_plugin_angel_heart.core.jev_decider import build_decision
+
+        def reply_rate(prob: float, n: int = 400) -> float:
+            hits = 0
+            for _ in range(n):
+                decision = build_decision(
+                    self._raw(reply=prob, questioned=1.0, interesting=1.0),
+                    [make_msg("A", "你好")],
+                    {"reply_mode": "sample"},
+                )
+                hits += 1 if decision.should_reply else 0
+            return hits / n
+
+        low = reply_rate(0.2)
+        mid = reply_rate(0.5)
+        high = reply_rate(0.9)
+        assert low < mid < high, (low, mid, high)
+        # 抽样是统计性的，留足余量
+        assert abs(low - 0.2) < 0.08, low
+        assert abs(high - 0.9) < 0.08, high
+
+    def test_sample_mode_below_threshold_can_reply(self):
+        """抽样口径下，低于阈值的概率也有机会接话（这是与 threshold 的区别）。"""
+        from astrbot_plugin_angel_heart.core.jev_decider import build_decision
+
+        replied = False
+        for _ in range(200):
+            decision = build_decision(
+                self._raw(reply=0.3, questioned=1.0, interesting=1.0),
+                [make_msg("A", "你好")],
+                {"reply_mode": "sample", "reply_threshold": 0.6},
+            )
+            if decision.should_reply:
+                replied = True
+                break
+        assert replied is True
+
+    def test_evidence_gates_still_apply_in_sample_mode(self):
+        """证据门（被追问/有兴趣）在抽样口径下照旧生效。"""
+        from astrbot_plugin_angel_heart.core.jev_decider import build_decision
+
+        for _ in range(100):
+            decision = build_decision(
+                self._raw(reply=1.0, questioned=0.1, interesting=0.1),
+                [make_msg("A", "你好")],
+                {"reply_mode": "sample"},
+            )
+            assert decision.should_reply is False
+
+    def test_unknown_mode_falls_back_to_sample(self):
+        from astrbot_plugin_angel_heart.core.jev_decider import build_decision
+
+        replied = False
+        for _ in range(200):
+            decision = build_decision(
+                self._raw(reply=0.4, questioned=1.0, interesting=1.0),
+                [make_msg("A", "你好")],
+                {"reply_mode": "nonsense"},
+            )
+            if decision.should_reply:
+                replied = True
+                break
+        assert replied is True
+
+    def test_decision_carries_confidence(self):
+        from astrbot_plugin_angel_heart.core.jev_decider import build_decision
+
+        decision = build_decision(
+            self._raw(reply=0.11508464306322369),
+            [make_msg("A", "你好")],
+            {"reply_mode": "threshold"},
+        )
+        assert abs(decision.confidence - 0.11508464306322369) < 1e-12
+
+    def test_stay_silent_overrides_sampling(self):
+        """选了 stay_silent 就一定不接，抽样也不例外。"""
+        from astrbot_plugin_angel_heart.core.jev_decider import build_decision
+
+        for _ in range(200):
+            decision = build_decision(
+                self._raw(reply=1.0, strategy="stay_silent"),
+                [make_msg("A", "你好")],
+                {"reply_mode": "sample"},
+            )
+            assert decision.should_reply is False
+
+    def test_hybrid_gate_uses_same_mode(self):
+        """hybrid 门控与最终判定用同一套口径。"""
+        from astrbot_plugin_angel_heart.core.jev_decider import decide_should_reply
+
+        # threshold 口径：低于阈值一律不放行
+        for _ in range(50):
+            passed, _draw = decide_should_reply(0.3, 0.6, "threshold")
+            assert passed is False
+        # sample 口径：低概率也有机会放行
+        hits = 0
+        for _ in range(400):
+            passed, _draw = decide_should_reply(0.3, 0.6, "sample")
+            hits += 1 if passed else 0
+        assert 0.15 < hits / 400 < 0.45
+
+    def test_missing_probability_never_replies(self):
+        from astrbot_plugin_angel_heart.core.jev_decider import decide_should_reply
+
+        for mode in ("sample", "threshold"):
+            for _ in range(50):
+                passed, _draw = decide_should_reply(None, 0.6, mode)
+                assert passed is False
+
+
+class TestConfidenceScalesReplyLength:
+    """概率缩放发言程度：把握越小，允许说的越少。"""
+
+    def _front_desk(self):
+        from astrbot_plugin_angel_heart.roles.front_desk import FrontDesk
+
+        fd = FrontDesk.__new__(FrontDesk)
+        fd._config_manager = MagicMock()
+        cm = MagicMock()
+        cm.normal_reply_max_chars = 20
+        cm.focus_reply_max_chars = 200
+        fd._config_manager.for_chat.return_value = cm
+        return fd
+
+    def test_no_confidence_keeps_original_limits(self):
+        from astrbot_plugin_angel_heart.roles.front_desk import FrontDesk
+
+        fd = self._front_desk()
+        text = fd._build_reply_length_reminder(False, "chat", 0.0)
+        assert "20 字" in text
+
+    def test_low_confidence_shortens_limit(self):
+        from astrbot_plugin_angel_heart.roles.front_desk import FrontDesk
+
+        fd = self._front_desk()
+        text = fd._build_reply_length_reminder(False, "chat", 0.2)
+        assert "12 字" in text
+        assert "把握不大" in text
+
+    def test_high_confidence_keeps_near_full_limit(self):
+        from astrbot_plugin_angel_heart.roles.front_desk import FrontDesk
+
+        fd = self._front_desk()
+        text = fd._build_reply_length_reminder(False, "chat", 1.0)
+        assert "20 字" in text
+        assert "把握不大" not in text
+
+    def test_scale_helper_bounds(self):
+        from astrbot_plugin_angel_heart.roles.front_desk import (
+            _scale_limit_by_confidence,
+        )
+
+        assert _scale_limit_by_confidence(200, 0.0) == 200
+        assert _scale_limit_by_confidence(200, 0.5) == 150
+        assert _scale_limit_by_confidence(200, 1.0) == 200
+        assert _scale_limit_by_confidence(200, 2.0) == 200
+        assert _scale_limit_by_confidence(20, 0.2) == 12
+
+    def test_confidence_read_from_event(self):
+        import json as _json
+
+        from astrbot_plugin_angel_heart.roles.front_desk import FrontDesk
+
+        fd = self._front_desk()
+        event = MagicMock()
+        event.angelheart_context = _json.dumps(
+            {"secretary_decision": {"should_reply": True, "confidence": 0.42}}
+        )
+        assert fd._decision_confidence(event) == 0.42
+
+        event.angelheart_context = "not-json"
+        assert fd._decision_confidence(event) == 0.0
+
+        event.angelheart_context = ""
+        assert fd._decision_confidence(event) == 0.0
+
+
+class TestHybridGateConfidenceFlow:
+    """hybrid 模式：Jev 的把握要跟着最终决策走。"""
+
+    def _secretary(self, config):
+        from astrbot_plugin_angel_heart.roles.secretary import Secretary
+
+        return Secretary(config, context=None, angel_context=None)
+
+    @pytest.mark.asyncio
+    async def test_gate_confidence_attaches_to_llm_decision(self):
+        from astrbot_plugin_angel_heart.models.analysis_result import SecretaryDecision
+
+        secretary = self._secretary(make_config(backend="hybrid"))
+        secretary.llm_analyzer.analyze_and_decide = AsyncMock(
+            return_value=SecretaryDecision(
+                should_reply=True, reply_strategy="策略", topic="话题",
+                entities=[], facts=[], keywords=[]
+            )
+        )
+        secretary.jev_decider.decide = AsyncMock(
+            return_value={
+                "ok": True,
+                "probabilities": {
+                    "should_reply": 0.9,
+                    "is_questioned": 0.8,
+                    "is_interesting": 0.5,
+                },
+                "reply_strategy": "answer_question",
+            }
+        )
+
+        decision = await secretary.perform_analysis([make_msg("A", "在吗")], [], "chat")
+        assert decision.should_reply is True
+        assert decision.confidence == 0.9
+
+    @pytest.mark.asyncio
+    async def test_llm_backend_keeps_confidence_zero(self):
+        """纯 LLM 路径没有置信度概念，字数行为保持原样。"""
+        from astrbot_plugin_angel_heart.models.analysis_result import SecretaryDecision
+
+        secretary = self._secretary(make_config(backend="llm"))
+        secretary.llm_analyzer.analyze_and_decide = AsyncMock(
+            return_value=SecretaryDecision(
+                should_reply=True, reply_strategy="策略", topic="话题",
+                entities=[], facts=[], keywords=[]
+            )
+        )
+
+        decision = await secretary.perform_analysis([make_msg("A", "在吗")], [], "chat")
+        assert decision.confidence == 0.0
+
+    @pytest.mark.asyncio
+    async def test_gate_blocked_returns_no_reply(self):
+        """门控未通过时直接不回复，且不调用秘书模型。"""
+        secretary = self._secretary(make_config(backend="hybrid"))
+        secretary.llm_analyzer.analyze_and_decide = AsyncMock()
+        secretary.jev_decider.decide = AsyncMock(
+            return_value={
+                "ok": True,
+                "probabilities": {
+                    "should_reply": 0.1,
+                    "is_questioned": 0.1,
+                    "is_interesting": 0.1,
+                },
+                "reply_strategy": "stay_silent",
+            }
+        )
+
+        decision = await secretary.perform_analysis([make_msg("A", "闲聊")], [], "chat")
+        assert decision.should_reply is False
+        assert secretary.llm_analyzer.analyze_and_decide.await_count == 0
+
+
+class TestLogProbabilityRounding:
+    """日志里的概率保留 3 位小数。"""
+
+    def test_round_probs(self):
+        from astrbot_plugin_angel_heart.roles.secretary import _round_probs
+
+        out = _round_probs(
+            {"should_reply": 0.11508464306322369, "is_questioned": 0.8, "bad": None}
+        )
+        assert out["should_reply"] == 0.115
+        assert out["is_questioned"] == 0.8
+        assert out["bad"] is None
+
+    def test_round_probs_handles_non_dict(self):
+        from astrbot_plugin_angel_heart.roles.secretary import _round_probs
+
+        assert _round_probs(None) == {}
+        assert _round_probs("x") == {}
 
 
 class TestPerformanceOptimizations:
