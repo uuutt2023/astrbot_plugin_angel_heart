@@ -48,7 +48,8 @@ Jev 是托管的**决策模型**：输入一段对话和一组类型化问题，
   - `threshold`：概率超过阈值才接话，行为可复现、便于复盘，但阈值附近是硬跳变（0.59 不接、0.61 就接）。
   - 两种口径下「非提问也回复」「被追问 / 有兴趣」这两道证据门都照旧生效。
 - **概率也管「说多少」**：Jev 路径下把握越小，允许的回复字数越少（置信度 0 → 半数额度，1 → 全额）；把握不足 0.5 时还会额外提示一句「只说最关键的一句」。
-- 开关与参数在插件配置页的**Jev 决策**分组：`enabled` 总开关、`api_key`、`base_url`、`model`、`timeout_sec`、`retries`、`reply_mode` 与三个概率阈值。
+- 开关与参数在插件配置页的**Jev 决策**分组：`enabled` 总开关、`api_key`、`base_url`、`api_format`、`model`、`timeout_sec`、`retries`、`reply_mode` 与三个概率阈值。
+- **接口协议可切换**：`api_format` 选 `systemone`（默认，POST `/v1/systemone`，官方 Jev / TypeSafe / StartLux 走这个）或 `decisions`（POST `/v1/decisions`，OpenAI Decisions 协议，部分中转站用这个端点）。两者请求体结构不同，插件内部自动翻译，判定逻辑不变。
 - Jev 判定为「不回复」或调用失败时，本轮降级为不接话，不影响群聊。
 
 细节见 [docs/architecture/jev_decision_backend.md](docs/architecture/jev_decision_backend.md)。

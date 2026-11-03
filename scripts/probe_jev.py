@@ -6,6 +6,10 @@
     python scripts/probe_jev.py --base-url https://api.example.com \
         --api-key sk-xxx --model your-model
 
+    # 中转站用的是 OpenAI Decisions 端点时
+    python scripts/probe_jev.py --base-url https://api.example.com \
+        --api-key sk-xxx --model your-model --api-format decisions
+
 脚本会按文档格式（POST {base_url}/v1/systemone）发两次最小请求：
 一次 choice、一次 noul，然后把结果翻译成结论：
 
@@ -49,7 +53,13 @@ CHOICE_QUESTION = {
 NOUL_QUESTION = {"q2": {"type": "noul", "instructions": "Is this urgent?"}}
 
 
-def diagnose(status: str, http_status: int | None, error_type: str, message: str) -> tuple[str, str]:
+def diagnose(
+    status: str,
+    http_status: int | None,
+    error_type: str,
+    message: str,
+    api_format: str = "systemone",
+) -> tuple[str, str]:
     """把一次失败翻译成 (结论, 建议)。"""
     if status == "ready":
         return "✅ 网关正常", "已经能拿到答案，插件里填同样的 base_url / api_key / model 即可"
@@ -70,8 +80,16 @@ def diagnose(status: str, http_status: int | None, error_type: str, message: str
             "模型名能被网关认出，但这个模型没有绑定到 SystemOne 端点的通道——"
             "换模型名，或问网关运营方开通"
         )
-    if http_status == 400 and ("state is required" in (message or "")
-                               or "questions must be" in (message or "")):
+    if http_status == 400 and "state is required" in (message or ""):
+        if api_format == "decisions":
+            # 这个端点其实在讲 SystemOne 的话——路径是 /v1/decisions 不代表协议也是
+            return (
+                "❌ 协议选错了",
+                "这个端点在说 SystemOne 的话（要 state，不要 input）——"
+                "改用 --api-format systemone 再试一次",
+            )
+        return "❌ 请求体不完整", f"网关的校验器说了：{message}"
+    if http_status == 400 and "questions must be" in (message or ""):
         return "❌ 请求体不完整", f"网关的校验器说了：{message}"
     if http_status is not None and http_status >= 500:
         return "❌ 上游任务失败", (
@@ -95,7 +113,9 @@ async def probe(cfg: dict, questions: dict, label: str) -> dict:
     http_status = result.get("http_status")
     error_type = str(result.get("error_type") or "")
     message = str(result.get("error_message") or "").strip()
-    verdict, advice = diagnose(status, http_status, error_type, message)
+    verdict, advice = diagnose(
+        status, http_status, error_type, message, cfg.get("api_format", "systemone")
+    )
     print(f"\n[{label}] HTTP {http_status or '-'}  status={status}")
     if message:
         print(f"  上游消息：{message}")
@@ -117,6 +137,12 @@ async def main() -> int:
     parser.add_argument("--model", default="jev-latest", help="模型名")
     parser.add_argument("--timeout-sec", type=float, default=15.0, help="单次请求超时（秒）")
     parser.add_argument("--retries", type=int, default=0, help="失败重试次数（诊断时建议 0）")
+    parser.add_argument(
+        "--api-format",
+        default="systemone",
+        choices=["systemone", "decisions"],
+        help="接口协议：systemone＝POST /v1/systemone（默认），decisions＝POST /v1/decisions",
+    )
     args = parser.parse_args()
 
     api_key = args.api_key or os.environ.get("JEVMODEL_API_KEY", "")
@@ -136,6 +162,7 @@ async def main() -> int:
         "model": args.model,
         "timeout_sec": args.timeout_sec,
         "retries": args.retries,
+        "api_format": args.api_format,
     }
 
     results = []

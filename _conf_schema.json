@@ -321,8 +321,26 @@
       "base_url": {
         "type": "string",
         "description": "Jev 接口地址",
-        "hint": "实际请求 POST {base_url}/v1/systemone。两个网关请求体完全一致，切换只需改这里并换上对应网关的 Key：https://jevmodel.org（文档见 https://jevmodel.org/zh/docs/）或 https://api.typesafe.ai。",
+        "hint": "网关根地址，实际请求路径由「接口协议」决定：systemone 走 {base_url}/v1/systemone，decisions 走 {base_url}/v1/decisions。常见网关：https://jevmodel.org（文档见 https://jevmodel.org/zh/docs/）、https://api.typesafe.ai，或中转站的自有域名。",
         "default": "https://jevmodel.org"
+      },
+      "api_format": {
+        "type": "string",
+        "description": "接口协议",
+        "hint": "决定请求体与端点路径。systemone＝TypeSafe SystemOne 协议（jevmodel.org / api.typesafe.ai / StartLux，默认）；decisions＝OpenAI Decisions 协议（POST /v1/decisions，部分中转站用这个端点）。两者结构不同，插件内部会自动翻译，判定逻辑不用改。",
+        "options": [
+          "systemone",
+          "decisions"
+        ],
+        "labels": [
+          "SystemOne（/v1/systemone）",
+          "OpenAI Decisions（/v1/decisions）"
+        ],
+        "subtitles": [
+          "官方 Jev / TypeSafe 协议：state + questions 映射。jevmodel.org、api.typesafe.ai、StartLux 的 SystemOne 通道都走这个。",
+          "OpenAI 新出的 Decisions 协议：input + questions 数组。若你的中转站文档写的是 /v1/decisions，选这个。"
+        ],
+        "default": "systemone"
       },
       "model": {
         "type": "string",

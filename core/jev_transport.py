@@ -32,6 +32,20 @@ GATEWAYS = {
     "typesafe": "https://api.typesafe.ai",
 }
 
+# ── 接口协议 ────────────────────────────────────────────────────────────
+# systemone：TypeSafe SystemOne 协议（jevmodel.org / api.typesafe.ai / StartLux）
+# decisions：OpenAI Decisions 协议（POST /v1/decisions）
+# 两者请求体结构不同，但可以互相翻译。内部统一用 SystemOne 的形状，
+# 只在真正发包/收包时翻译一次，判定层完全不用改。
+API_FORMAT_SYSTEMONE = "systemone"
+API_FORMAT_DECISIONS = "decisions"
+API_FORMATS = (API_FORMAT_SYSTEMONE, API_FORMAT_DECISIONS)
+
+ENDPOINT_PATHS = {
+    API_FORMAT_SYSTEMONE: "/v1/systemone",
+    API_FORMAT_DECISIONS: "/v1/decisions",
+}
+
 MAX_QUESTIONS = 8
 MAX_STATE_CHARS = 1_000_000
 MAX_INSTRUCTIONS_CHARS = 1_800
@@ -97,16 +111,144 @@ def budget_seconds(cfg) -> float:
     return max(1.0, min(20.0, budget))
 
 
-def normalize_base_url(base):
-    """把用户填的接口地址收敛成完整的 /v1/systemone 端点。"""
+def normalize_base_url(base, api_format: str = API_FORMAT_SYSTEMONE):
+    """把用户填的接口地址收敛成完整端点。
+
+    SystemOne（TypeSafe / Jev / StartLux）走 ``/v1/systemone``，
+    OpenAI Decisions 协议走 ``/v1/decisions``。用户填的地址里如果已经带了
+    另一种协议的尾缀，这里会换成当前选中的那个——不然换了协议还一直打老路径。
+    """
     base = str(base or "").strip().rstrip("/")
     if not base:
         base = GATEWAYS["jevmodel"]
-    if base.endswith("/v1/systemone"):
+    suffix = ENDPOINT_PATHS.get(api_format, ENDPOINT_PATHS[API_FORMAT_SYSTEMONE])
+    if base.endswith(suffix):
         return base
+    for other in ENDPOINT_PATHS.values():
+        if base.endswith(other):
+            base = base[: -len(other)]
+            break
     if base.endswith("/v1"):
-        return base + "/systemone"
-    return base + "/v1/systemone"
+        return base + suffix[len("/v1"):]
+    return base + suffix
+
+
+def resolve_api_format(cfg) -> str:
+    """读出配置里的接口协议；认不出来就按 SystemOne 走（保持旧行为）。"""
+    value = ""
+    if isinstance(cfg, dict):
+        value = str(cfg.get("api_format") or "").strip().lower()
+    if value in (API_FORMAT_DECISIONS, "openai", "openai_decisions", "decisions_api"):
+        return API_FORMAT_DECISIONS
+    return API_FORMAT_SYSTEMONE
+
+
+def _decisions_input(state) -> str:
+    """SystemOne 的 state → Decisions 的 input。
+
+    Decisions 的 input 只收字符串或消息数组，收不了对象；结构化 state
+    序列化成 JSON 文本（GoModel 之类的翻译网关也是这么处理的）。
+    """
+    if isinstance(state, str):
+        return state
+    try:
+        return json.dumps(state, ensure_ascii=False, separators=(",", ":"))
+    except (TypeError, ValueError):
+        return str(state)
+
+
+def _decisions_question(name: str, question: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+    """SystemOne 的问题定义 → Decisions 的问题定义。
+
+    差别：noul 叫 predicate；候选项从 criteria 映射变成 choices 数组；
+    score 的有序档位从 criteria 字符串数组变成 levels 数组。
+    """
+    qtype = question.get("type")
+    if qtype not in ("choice", "noul", "score"):
+        # box 等 SystemOne 独有类型，Decisions 没有对应物
+        return None
+    out: Dict[str, Any] = {
+        "name": name,
+        "type": "predicate" if qtype == "noul" else qtype,
+        "instructions": question.get("instructions", ""),
+    }
+    if qtype == "choice":
+        criteria = question.get("criteria") or {}
+        out["choices"] = [
+            {"value": key, "description": value} for key, value in criteria.items()
+        ]
+    elif qtype == "score":
+        criteria = question.get("criteria") or []
+        out["levels"] = [{"label": str(item)} for item in criteria]
+    return out
+
+
+def build_payload(
+    model: str,
+    state: Any,
+    questions: Dict[str, Any],
+    api_format: str = API_FORMAT_SYSTEMONE,
+) -> Dict[str, Any]:
+    """按目标协议拼请求体。"""
+    if api_format == API_FORMAT_DECISIONS:
+        return {
+            "model": model,
+            "input": _decisions_input(state),
+            "questions": [
+                item
+                for item in (
+                    _decisions_question(name, question)
+                    for name, question in questions.items()
+                )
+                if item is not None
+            ],
+        }
+    return {"model": model, "state": state, "questions": questions}
+
+
+def to_systemone_response(data: Dict[str, Any]) -> Dict[str, Any]:
+    """把 OpenAI Decisions 的响应翻译成 SystemOne 的形状。
+
+    翻译后上层（判定层）完全不用改：答案都是「以问题名为键」的映射，
+    概率都是 ``probabilities: {选项: 概率}``，是非题都是 ``noul: 概率``。
+    """
+    if not isinstance(data, dict):
+        return data
+    answers = data.get("answers")
+    if not isinstance(answers, list):
+        return data
+    converted: Dict[str, Any] = {}
+    for item in answers:
+        if not isinstance(item, dict):
+            continue
+        name = item.get("name")
+        if not isinstance(name, str) or not name:
+            continue
+        atype = item.get("type")
+        if atype == "predicate":
+            converted[name] = {"type": "noul", "noul": item.get("probability")}
+        elif atype == "choice":
+            probabilities: Dict[str, float] = {}
+            for entry in item.get("probabilities") or []:
+                if isinstance(entry, dict) and "value" in entry:
+                    probabilities[str(entry["value"])] = entry.get("probability")
+            converted[name] = {
+                "type": "choice",
+                "choice": item.get("choice"),
+                "probabilities": probabilities,
+                "confidence": item.get("confidence"),
+            }
+        elif atype == "score":
+            converted[name] = {
+                "type": "score",
+                "score": item.get("score"),
+                "confidence": item.get("confidence"),
+            }
+        # refusal：Decisions 允许「这题拒答」，SystemOne 形状里没有对应物，
+        # 直接跳过（这题当作没答）。
+    result = dict(data)
+    result["answers"] = converted
+    return result
 
 
 def serialized_length(value) -> int:
@@ -347,18 +489,17 @@ class JevClient:
                 "error_message": "；".join(problems),
             }
 
+        api_format = resolve_api_format(cfg)
         base = str(cfg.get("base_url") or GATEWAYS["jevmodel"])
-        url = normalize_base_url(base)
+        url = normalize_base_url(base, api_format)
         signature = hashlib.sha256(
             json.dumps([url, cfg.get("model"), cfg.get("api_key")]).encode()
         ).hexdigest()
         timeout = budget_seconds(cfg)
         model = cfg.get("model") or "jev-latest"
-        payload = {
-            "model": model,
-            "state": state,
-            "questions": questions,
-        }
+        # 按目标协议拼请求体；questions 本身保持 SystemOne 形状，
+        # 校验与答案映射都还按 SystemOne 走（Decisions 的响应会翻译回来）。
+        payload = build_payload(model, state, questions, api_format)
         # 只序列化一次：缓存键、字节计数与实际请求体共用同一份 JSON 文本。
         # 之前同一份 state 要 dumps 三遍（键、计数、aiohttp 自己再序列化）。
         payload_json = json.dumps(
@@ -410,7 +551,8 @@ class JevClient:
             hits.append(now)  # 真正发出请求才计入限流窗口
             task = asyncio.create_task(
                 self._request(
-                    url, cfg, payload, payload_json, timeout, signature, key, model, idem
+                    url, cfg, payload, payload_json, timeout, signature, key, model,
+                    idem, questions, api_format,
                 )
             )
             entry = {"task": task, "waiters": 0}
@@ -431,7 +573,8 @@ class JevClient:
                     await asyncio.gather(entry["task"], return_exceptions=True)
 
     async def _request(
-        self, url, cfg, payload, payload_json, timeout, signature, key, model, idem
+        self, url, cfg, payload, payload_json, timeout, signature, key, model, idem,
+        questions=None, api_format=API_FORMAT_SYSTEMONE,
     ):
         if self.session is None or self.session.closed:
             self.session = aiohttp.ClientSession(
@@ -462,7 +605,11 @@ class JevClient:
             ) as response:
                 if response.status == 200:
                     data = await response.json(content_type=None)
-                    if valid_answers(data, payload["questions"]):
+                    if api_format == API_FORMAT_DECISIONS:
+                        # Decisions 的答案数组 → SystemOne 的答案映射，
+                        # 翻译后上层判定层完全不用知道协议差异。
+                        data = to_systemone_response(data)
+                    if valid_answers(data, questions or {}, require_all=api_format != API_FORMAT_DECISIONS):
                         result = {
                             "status": "ready",
                             "answers": data["answers"],
@@ -535,11 +682,18 @@ class JevClient:
         return result
 
 
-def valid_answers(data, questions):
+def valid_answers(data, questions, require_all: bool = True):
+    """校验响应里的答案。
+
+    ``require_all=False`` 时允许「有的问题没答」——OpenAI Decisions 允许单题
+    拒答（refusal），SystemOne 没有这个概念，翻译时那题会被跳过。
+    """
     if not isinstance(data, dict) or not isinstance(data.get("answers"), dict):
         return False
     for name, question in questions.items():
         answer = data["answers"].get(name)
+        if answer is None and not require_all:
+            continue
         if not isinstance(answer, dict) or answer.get("type") != question.get("type"):
             return False
         if question.get("type") == "noul" and probability(answer) is None:
