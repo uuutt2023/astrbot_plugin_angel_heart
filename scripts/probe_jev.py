@@ -25,7 +25,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
-import json
+import importlib
 import os
 import sys
 from pathlib import Path
@@ -34,10 +34,10 @@ _ROOT = Path(__file__).resolve().parent.parent
 if str(_ROOT.parent) not in sys.path:
     sys.path.insert(0, str(_ROOT.parent))
 
-from astrbot_plugin_angel_heart.core.jev_transport import (  # noqa: E402
-    JevClient,
-    normalize_base_url,
-)
+# 按实际目录名解析包路径（仓库被 clone 成别的名字也能跑）
+_transport = importlib.import_module(f"{_ROOT.name}.core.jev_transport")
+JevClient = _transport.JevClient
+normalize_base_url = _transport.normalize_base_url
 
 CHOICE_QUESTION = {
     "q1": {
