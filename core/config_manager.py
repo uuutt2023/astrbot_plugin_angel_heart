@@ -118,10 +118,10 @@ class ConfigManager:
 
     @property
     def jev_decision_enabled(self) -> bool:
-        """Jev 决策是否可用：总开关打开且已填 API Key。"""
+        """Jev 决策是否可用：总开关打开且填了网关代理地址。"""
         cfg = self.jev_decision
         return bool(cfg.get("enabled", False)) and bool(
-            str(cfg.get("api_key") or "").strip()
+            str(cfg.get("proxy_url") or "").strip()
         )
 
     # ========== timing ==========

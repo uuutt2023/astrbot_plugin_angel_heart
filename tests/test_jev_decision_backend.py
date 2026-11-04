@@ -39,11 +39,8 @@ def make_config(backend: str = "llm", jev_enabled: bool = True, **jev_overrides)
 
     jev = {
         "enabled": jev_enabled,
-        "api_key": "sk-test",
-        "base_url": "https://jevmodel.org",
-        "model": "jev-latest",
-        "timeout_sec": 8.0,
-        "retries": 1,
+        "proxy_url": "http://127.0.0.1:8770",
+        "proxy_protocol": "systemone",
         # 夹具固定用阈值口径：阈值判定是确定的，抽样口径要另行测分布
         "reply_mode": "threshold",
         "reply_threshold": 0.6,
@@ -190,12 +187,6 @@ class TestQuestionsWithinDocumentedLimits:
         questions = build_questions()
         assert len(questions) == 4
         assert len(questions) <= 8
-
-    def test_local_validator_accepts_questions(self):
-        from astrbot_plugin_angel_heart.core.jev_decider import build_questions
-        from astrbot_plugin_angel_heart.core.jev_transport import validate_request
-
-        assert validate_request("some state", build_questions()) == []
 
     def test_instructions_and_criteria_within_limits(self):
         from astrbot_plugin_angel_heart.core.jev_decider import build_questions
@@ -345,30 +336,18 @@ class TestJevDecider:
     """JevDecider.decide 的成功与失败路径。"""
 
     @pytest.mark.asyncio
-    async def test_missing_api_key_returns_error(self):
+    async def test_missing_gateway_returns_error(self):
         from astrbot_plugin_angel_heart.core.jev_decider import JevDecider
 
         result = await JevDecider().decide({}, [make_msg("A", "你好")])
         assert result["ok"] is False
-        assert "api_key" in result["error"]
-
-    @pytest.mark.asyncio
-    async def test_gateway_proxy_does_not_require_api_key(self):
-        """走网关时不用自己的 Key。"""
-        from astrbot_plugin_angel_heart.core.jev_decider import JevDecider
-
-        result = await JevDecider().decide(
-            {"proxy_url": "http://127.0.0.1:8770", "proxy_protocol": "systemone"},
-            [make_msg("A", "你好")],
-        )
-        assert result["ok"] is False
-        assert "api_key" not in result["error"]
+        assert "proxy_url" in result["error"]
 
     @pytest.mark.asyncio
     async def test_empty_dialogue_returns_error(self):
         from astrbot_plugin_angel_heart.core.jev_decider import JevDecider
 
-        result = await JevDecider().decide({"api_key": "sk-x"}, [])
+        result = await JevDecider().decide({"proxy_url": "http://127.0.0.1:8770"}, [])
         assert result["ok"] is False
 
     @pytest.mark.asyncio
@@ -382,7 +361,7 @@ class TestJevDecider:
             "answers": ready_answers(),
         }
         result = await decider.decide(
-            {"api_key": "sk-x"}, [make_msg("A", "在吗")], alias="fairy"
+            {"proxy_url": "http://127.0.0.1:8770"}, [make_msg("A", "在吗")], alias="fairy"
         )
         assert result["ok"] is True
         assert result["probabilities"]["should_reply"] == 0.9
@@ -401,7 +380,7 @@ class TestJevDecider:
             "retryable": False,
             "error_message": "Invalid or disabled API key.",
         }
-        result = await decider.decide({"api_key": "sk-bad"}, [make_msg("A", "在吗")])
+        result = await decider.decide({"proxy_url": "http://127.0.0.1:8770"}, [make_msg("A", "在吗")])
         assert result["ok"] is False
         assert "API Key" in result["error"]
 
@@ -422,7 +401,7 @@ class TestJevDecider:
             {"status": "ready", "answers": ready_answers()},
         ]
         result = await decider.decide(
-            {"api_key": "sk-x", "retries": 1}, [make_msg("A", "在吗")]
+            {"proxy_url": "http://127.0.0.1:8770", "retries": 1}, [make_msg("A", "在吗")]
         )
         assert result["ok"] is True
         first_key = decider.client.evaluate.call_args_list[0][0][3]
@@ -441,7 +420,7 @@ class TestJevDecider:
             "retryable": False,
         }
         result = await decider.decide(
-            {"api_key": "sk-bad", "retries": 2}, [make_msg("A", "在吗")]
+            {"proxy_url": "http://127.0.0.1:8770", "retries": 2}, [make_msg("A", "在吗")]
         )
         assert result["ok"] is False
         assert decider.client.evaluate.await_count == 1
@@ -611,11 +590,11 @@ class TestConfigManagerBackend:
         assert make_config(backend="jev").decision_backend == "jev"
         assert make_config(backend="hybrid").decision_backend == "hybrid"
 
-    def test_jev_enabled_requires_key(self):
-        """Jev 可用性 = 总开关打开 且 已填 API Key。"""
+    def test_jev_enabled_requires_gateway(self):
+        """Jev 可用性 = 总开关打开 且 填了网关代理地址。"""
         assert make_config(jev_enabled=True).jev_decision_enabled is True
         assert make_config(jev_enabled=False).jev_decision_enabled is False
-        assert make_config(jev_enabled=True, api_key="").jev_decision_enabled is False
+        assert make_config(jev_enabled=True, proxy_url="").jev_decision_enabled is False
 
 
 class TestVisualConfigSelectable:
@@ -633,9 +612,12 @@ class TestVisualConfigSelectable:
         assert len(meta.get("subtitles", meta["options"])) == 3
 
     def test_schema_exposes_jev_group(self):
+        """客户端只留「调用网关」与「协议名」两项连接配置。"""
         items = self._schema()["jev_decision"]["items"]
-        for key in ("enabled", "api_key", "base_url", "model"):
+        for key in ("enabled", "proxy_url", "proxy_protocol"):
             assert key in items
+        for gone in ("api_key", "base_url", "api_format", "endpoint_path", "model"):
+            assert gone not in items
 
     def test_web_api_rejects_value_outside_options(self):
         import asyncio
@@ -661,7 +643,7 @@ class TestVisualConfigSelectable:
         api._plugin = MagicMock()
 
         result = _run_in_app(
-            api.save_config, {"values": {"jev_decision": {"api_key": "sk-x"}}}
+            api.save_config, {"values": {"jev_decision": {"proxy_url": "http://127.0.0.1:8770"}}}
         )
         assert result["status"] == "ok"
 
@@ -1066,130 +1048,3 @@ class TestPerformanceOptimizations:
             payload, ensure_ascii=False, separators=(",", ":")
         ).encode() == expected
 
-    def test_validator_still_catches_real_overflow(self):
-        """快速判断只能跳过必然通过的检查，真正的超限必须照常拦下。"""
-        from astrbot_plugin_angel_heart.core.jev_transport import (
-            MAX_CRITERIA_CHARS,
-            MAX_STATE_CHARS,
-            validate_request,
-        )
-
-        huge_state = "x" * (MAX_STATE_CHARS + 10)
-        problems = validate_request(huge_state, {"q": {"type": "noul", "instructions": "x"}})
-        assert problems and "state" in problems[0]
-
-        huge_criteria = {"true": "y" * (MAX_CRITERIA_CHARS + 10)}
-        problems = validate_request("s", {"q": {"type": "noul", "instructions": "x",
-                                               "criteria": huge_criteria}})
-        assert problems and "criteria" in problems[0]
-
-    def test_small_request_passes_validation(self):
-        from astrbot_plugin_angel_heart.core.jev_decider import build_questions
-        from astrbot_plugin_angel_heart.core.jev_transport import validate_request
-
-        assert validate_request("短状态", build_questions()) == []
-
-
-class TestJevTransportContract:
-    """传输层契约：端点归一、幂等键、预检、错误码、预算口径。"""
-
-    def test_base_url_normalization(self):
-        from astrbot_plugin_angel_heart.core.jev_transport import normalize_base_url
-
-        assert normalize_base_url("https://jevmodel.org") == (
-            "https://jevmodel.org/v1/systemone"
-        )
-        assert normalize_base_url("https://jevmodel.org/") == (
-            "https://jevmodel.org/v1/systemone"
-        )
-        assert normalize_base_url("https://jevmodel.org/v1") == (
-            "https://jevmodel.org/v1/systemone"
-        )
-        assert normalize_base_url("https://jevmodel.org/v1/systemone") == (
-            "https://jevmodel.org/v1/systemone"
-        )
-
-    def test_idempotency_key_is_unique_and_short(self):
-        from astrbot_plugin_angel_heart.core.jev_transport import new_idempotency_key
-
-        a = new_idempotency_key()
-        b = new_idempotency_key()
-        assert a != b
-        assert len(a) <= 100
-        assert a.startswith("angel-")
-
-    def test_validator_rejects_oversized_request(self):
-        from astrbot_plugin_angel_heart.core.jev_transport import validate_request
-
-        problems = validate_request(
-            "x" * 10,
-            {"q" * 65: {"type": "noul", "instructions": "x"}},
-        )
-        assert problems
-
-    def test_validator_accepts_empty_question_set(self):
-        from astrbot_plugin_angel_heart.core.jev_transport import validate_request
-
-        assert validate_request("state", {}) != []
-
-    def test_error_status_mapping(self):
-        from astrbot_plugin_angel_heart.core.jev_transport import error_status
-
-        assert error_status(401) == "unauthorized"
-        assert error_status(402) == "insufficient_credits"
-        assert error_status(409) == "conflict"
-        assert error_status(422) == "invalid_request"
-        assert error_status(429) == "rate_limited"
-        assert error_status(502) == "upstream_error"
-
-    def test_error_body_is_parsed(self):
-        from astrbot_plugin_angel_heart.core.jev_transport import parse_error
-
-        kind, message = parse_error(
-            {"error": {"type": "authentication_error", "message": "Invalid key"}}
-        )
-        assert kind == "authentication_error"
-        assert message == "Invalid key"
-
-    def test_error_body_as_plain_string(self):
-        """中转网关常把 error 写成字符串（{"error": "Task request failed"}）。
-
-        只认对象形态的话，日志里只剩「HTTP 500」，看不到上游说了什么。
-        """
-        from astrbot_plugin_angel_heart.core.jev_transport import parse_error
-
-        kind, message = parse_error({"error": "Task request failed"})
-        assert kind == ""
-        assert message == "Task request failed"
-
-    def test_error_body_top_level_message(self):
-        from astrbot_plugin_angel_heart.core.jev_transport import parse_error
-
-        kind, message = parse_error({"message": "invalid api key"})
-        assert message == "invalid api key"
-
-    def test_http_500_is_upstream_error(self):
-        """500 是上游任务失败，不是「请求写错了」。"""
-        from astrbot_plugin_angel_heart.core.jev_transport import error_status
-
-        assert error_status(500) == "upstream_error"
-
-    def test_http_500_is_retryable(self):
-        """很多网关在上游报错时返回 500 而不是 502——当不可重试会让偶发抖动直接失败。"""
-        from astrbot_plugin_angel_heart.core.jev_transport import RETRYABLE_STATUS
-
-        assert 500 in RETRYABLE_STATUS
-        assert 502 in RETRYABLE_STATUS
-        # 请求本身有问题的状态不该重试
-        for status in (400, 401, 402, 403, 404, 422):
-            assert status not in RETRYABLE_STATUS
-
-    def test_budget_is_shared_single_source(self):
-        """预算口径统一在 budget_seconds：传输层、判读层、调用方共用。"""
-        from astrbot_plugin_angel_heart.core.jev_transport import budget_seconds
-
-        assert budget_seconds({"timeout_sec": 7}) == 7.0
-        assert budget_seconds({}) == 8.0
-        assert budget_seconds({"timeout_sec": "bad"}) == 8.0
-        assert budget_seconds({"timeout_sec": 999}) == 20.0
-        assert budget_seconds({"timeout_sec": 0.1}) == 1.0

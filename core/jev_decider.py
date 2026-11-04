@@ -25,6 +25,7 @@ from astrbot.api import logger
 
 from ..models.analysis_result import SecretaryDecision
 from .jev_transport import (
+    DEFAULT_RETRIES,
     JevClient,
     budget_seconds,
     new_idempotency_key,
@@ -308,12 +309,12 @@ class JevDecider:
             dict: ok 为 True 时含 probabilities / reply_strategy；失败时含 error。
         """
         cfg = cfg or {}
-        if not resolve_proxy(cfg)[0] and not str(cfg.get("api_key") or "").strip():
-            return {"ok": False, "error": "未配置 API Key（jev_decision.api_key）或网关代理地址"}
+        if not resolve_proxy(cfg)[0]:
+            return {"ok": False, "error": "未配置网关代理地址（jev_decision.proxy_url）"}
 
         timeout = budget_seconds(cfg)
         try:
-            retries = max(0, min(3, int(cfg.get("retries", 1))))
+            retries = max(0, min(3, int(cfg.get("retries", DEFAULT_RETRIES))))
         except (TypeError, ValueError):
             return {"ok": False, "error": "Jev 重试配置无效"}
 

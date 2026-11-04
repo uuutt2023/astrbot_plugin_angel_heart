@@ -155,14 +155,14 @@ Jev 是托管的**决策模型**：输入一段对话和一组类型化问题，
 
 ### 走 Jev 决策网关
 
-多个插件共用一套 Jev 配置时，可以装 [astrbot_plugin_jev_gateway](https://github.com/uuutt2023/astrbot_plugin_jev_gateway)：
-在网关里登记好 API 入口，这里只填两项——
+Jev 的 Key、地址、模型、超时统一由 [astrbot_plugin_jev_gateway](https://github.com/uuutt2023/astrbot_plugin_jev_gateway)
+管理。本插件的设置里只填两项——
 
 - **网关代理地址**：如 `http://127.0.0.1:8770`
 - **请求协议**：网关里登记的协议名，如 `systemone`
 
-填了之后本插件的 `Jev API Key` 可以留空，鉴权由网关负责。代理地址留空＝直连，
-行为与以前一样。
+协议翻译（SystemOne ⇄ OpenAI Decisions）、重试、30 秒去重缓存、余额追踪都在网关那边，
+本插件只管发问题、读答案。换网关时只改网关一处。
 
 ## 快速开始
 

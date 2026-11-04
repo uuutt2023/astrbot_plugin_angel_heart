@@ -3,6 +3,11 @@
 ## 未发布
 
 ### Added
+- **Jev 接入收拢到网关**：判定请求的传输层搬到了
+  [astrbot_plugin_jev_gateway](https://github.com/uuutt2023/astrbot_plugin_jev_gateway)——
+  协议翻译（SystemOne ⇄ OpenAI Decisions）、重试、30 秒去重缓存、余额追踪都由网关负责。
+  本插件的 Jev 设置只剩「网关代理地址」与「请求协议」两项，Key、地址、模型、超时
+  都在网关那边配。传输层从 760 多行瘦到 200 行以内。
 - **支持 Jev 决策网关**：新增「网关代理地址」与「请求协议」两项配置。填了代理
   地址后，请求会转给 `astrbot_plugin_jev_gateway` 由它按协议名中转到上游，插件
   自己就不用再填 Key 和地址了——换网关只改网关一处。代理地址留空时行为与以前

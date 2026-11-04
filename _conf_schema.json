@@ -299,7 +299,7 @@
   "jev_decision": {
     "type": "object",
     "description": "[Jev 判断] Jev 决策模型设置",
-    "hint": "仅在「秘书决策方式」选 jev/hybrid 时生效。",
+    "hint": "仅在「秘书决策方式」选 jev/hybrid 时生效。判定请求统一走 Jev 决策网关，这里只填代理地址和协议名。",
     "items": {
       "enabled": {
         "type": "bool",
@@ -307,22 +307,10 @@
         "hint": "总开关，关闭时只走 LLM。",
         "default": false
       },
-      "api_key": {
-        "type": "string",
-        "description": "Jev API Key",
-        "hint": "sk- 开头，在所选网关的控制台创建。",
-        "default": ""
-      },
-      "base_url": {
-        "type": "string",
-        "description": "Jev 接口地址",
-        "hint": "网关根地址。可选：jevmodel.org（官方）、api.typesafe.ai、jevtypesafeai.com（第三方代理）。",
-        "default": "https://jevmodel.org"
-      },
       "proxy_url": {
         "type": "string",
         "description": "网关代理地址",
-        "hint": "Jev 网关的地址，例如 http://127.0.0.1:8770。留空＝直连下面的接口地址。",
+        "hint": "Jev 决策网关的地址，如 http://127.0.0.1:8770。Key、模型、超时都在网关那边配。",
         "default": ""
       },
       "proxy_protocol": {
@@ -330,44 +318,6 @@
         "description": "请求协议",
         "hint": "网关里登记的协议名，决定转发到哪个上游入口。",
         "default": "systemone"
-      },
-      "api_format": {
-        "type": "string",
-        "description": "接口协议",
-        "hint": "systemone＝官方 Jev/TypeSafe；decisions＝OpenAI Decisions。部分中转站用后者。",
-        "options": [
-          "systemone",
-          "decisions"
-        ],
-        "labels": [
-          "SystemOne（/v1/systemone）",
-          "OpenAI Decisions（/v1/decisions）"
-        ],
-        "default": "systemone"
-      },
-      "endpoint_path": {
-        "type": "string",
-        "description": "端点路径",
-        "hint": "留空＝按「接口协议」自动拼。jevtypesafeai.com 用 /api/v1/decide。",
-        "default": ""
-      },
-      "model": {
-        "type": "string",
-        "description": "Jev 模型名",
-        "hint": "默认 jev-latest；jev-preview 支持图像输入（实验性）。",
-        "default": "jev-latest"
-      },
-      "timeout_sec": {
-        "type": "float",
-        "description": "请求超时（秒）",
-        "hint": "本轮所有尝试共享的总预算，建议 5-10 秒。",
-        "default": 8.0
-      },
-      "retries": {
-        "type": "int",
-        "description": "失败重试次数",
-        "hint": "限流或上游故障时重试。",
-        "default": 1
       },
       "reply_mode": {
         "type": "string",
