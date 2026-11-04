@@ -69,6 +69,8 @@ def decide_should_reply(
 # 传输层失败状态 → 一句可读原因。
 _STATUS_REASON = {
     "unauthorized": "API Key 无效或已被禁用",
+    "forbidden": "账户未激活或无权访问",
+    "payload_too_large": "请求体过大",
     "insufficient_credits": "Jev 账户余额不足",
     "conflict": "上一次请求仍在处理中",
     "invalid_request": "请求体未通过 Jev 校验",

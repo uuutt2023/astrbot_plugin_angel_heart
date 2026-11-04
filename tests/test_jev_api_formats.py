@@ -234,3 +234,64 @@ class TestRoundTrip:
         assert set(translated["answers"]) == set(QUESTIONS)
         assert translated["answers"]["should_reply"]["noul"] == 0.8
         assert json.dumps(translated, ensure_ascii=False)
+
+
+class TestCustomEndpointPath:
+    """第三方代理（如 jevtypesafeai.com）用的是自定义路径。"""
+
+    def test_custom_path(self):
+        assert (
+            normalize_base_url(
+                "https://jevtypesafeai.com", API_FORMAT_SYSTEMONE, "/api/v1/decide"
+            )
+            == "https://jevtypesafeai.com/api/v1/decide"
+        )
+
+    def test_custom_path_without_leading_slash(self):
+        assert (
+            normalize_base_url(
+                "https://jevtypesafeai.com", API_FORMAT_SYSTEMONE, "api/v1/decide"
+            )
+            == "https://jevtypesafeai.com/api/v1/decide"
+        )
+
+    def test_custom_path_wins_over_protocol(self):
+        """自定义路径优先于协议默认路径。"""
+        assert normalize_base_url(
+            "https://x.dev", API_FORMAT_DECISIONS, "/api/v1/decide"
+        ).endswith("/api/v1/decide")
+
+    def test_full_url_in_base_is_kept(self):
+        assert (
+            normalize_base_url(
+                "https://jevtypesafeai.com/api/v1/decide",
+                API_FORMAT_SYSTEMONE,
+                "/api/v1/decide",
+            )
+            == "https://jevtypesafeai.com/api/v1/decide"
+        )
+
+    def test_empty_path_uses_protocol(self):
+        assert normalize_base_url("https://x.dev", API_FORMAT_DECISIONS, "").endswith(
+            "/v1/decisions"
+        )
+
+    def test_resolve_endpoint_path(self):
+        from astrbot_plugin_angel_heart.core.jev_transport import resolve_endpoint_path
+
+        assert resolve_endpoint_path({"endpoint_path": " /api/v1/decide "}) == "/api/v1/decide"
+        assert resolve_endpoint_path({}) == ""
+        assert resolve_endpoint_path(None) == ""
+
+    def test_gateway_preset(self):
+        from astrbot_plugin_angel_heart.core.jev_transport import GATEWAYS
+
+        assert GATEWAYS["jevtypesafeai"] == "https://jevtypesafeai.com"
+
+
+class TestNewErrorCodes:
+    def test_403_and_413(self):
+        from astrbot_plugin_angel_heart.core.jev_transport import error_status
+
+        assert error_status(403) == "forbidden"
+        assert error_status(413) == "payload_too_large"

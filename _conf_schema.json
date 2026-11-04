@@ -316,7 +316,7 @@
       "base_url": {
         "type": "string",
         "description": "Jev 接口地址",
-        "hint": "网关根地址，请求路径由「接口协议」决定。",
+        "hint": "网关根地址。可选：jevmodel.org（官方）、api.typesafe.ai、jevtypesafeai.com（第三方代理）。",
         "default": "https://jevmodel.org"
       },
       "api_format": {
@@ -332,6 +332,12 @@
           "OpenAI Decisions（/v1/decisions）"
         ],
         "default": "systemone"
+      },
+      "endpoint_path": {
+        "type": "string",
+        "description": "端点路径",
+        "hint": "留空＝按「接口协议」自动拼。jevtypesafeai.com 用 /api/v1/decide。",
+        "default": ""
       },
       "model": {
         "type": "string",

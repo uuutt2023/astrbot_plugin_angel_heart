@@ -3,6 +3,12 @@
 ## 未发布
 
 ### Added
+- **支持 JevTypeSafeAI 第三方代理**：新增「端点路径」配置项，填 `/api/v1/decide`
+  即可对接 `https://jevtypesafeai.com`——它的协议与 SystemOne 完全一致，只是路径带
+  `/api` 前缀。另外补上 403（账户未激活）与 413（请求体过大）的状态映射，
+  并读取第三方代理放在 `usage.credits_remaining_usd` 里的余额。
+  `core/jev_transport.py`、`_conf_schema.json`、`scripts/probe_jev.py`（新增
+  `--endpoint-path`）。
 - **配置页文案精简**：Jev 配置组的每个选项改成一句话说明，不再重复解释同一件事
   （路径只由「接口协议」说、默认值不再在提示里重复、后端下拉去掉了与标签重复的副标题）。
   AngelHeart 的「Jev 决策」组描述从 1414 字压到 316 字，「回复节奏」「唤醒互动」两组

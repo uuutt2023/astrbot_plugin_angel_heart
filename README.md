@@ -139,6 +139,20 @@ Jev 是托管的**决策模型**：输入一段对话和一组类型化问题，
 | [天使之魂](https://github.com/kawayiYokami/astrbot_plugin_angel_memory) | AI 记忆与认知 |
 | [天使的画笔](https://github.com/kawayiYokami/astrbot_plugin_angel_brush) | 说话出图、发图改图 |
 
+### 支持哪些网关
+
+| 网关 | 接口地址 | 端点路径 | 接口协议 | Key |
+|---|---|---|---|---|
+| Jev 官方 | `https://jevmodel.org` | `/v1/systemone` | systemone | `sk-` 开头 |
+| TypeSafe | `https://api.typesafe.ai` | `/v1/systemone` | systemone | `sk-` 开头 |
+| JevTypeSafeAI（第三方代理） | `https://jevtypesafeai.com` | `/api/v1/decide` | systemone | `jv_live_` 开头 |
+
+第三方代理的协议与官方一致，只是路径带 `/api` 前缀——把「端点路径」填成
+`/api/v1/decide` 即可。其余网关留空「端点路径」，插件会按「接口协议」自动拼。
+
+不确定配置对不对时，跑一下 `python scripts/probe_jev.py --base-url ... --api-key ...`，
+它会告诉你问题出在 Key、余额、路径、模型通道还是上游。
+
 ## 快速开始
 
 ### 前置要求

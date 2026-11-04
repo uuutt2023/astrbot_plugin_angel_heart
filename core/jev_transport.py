@@ -30,6 +30,8 @@ import aiohttp
 GATEWAYS = {
     "jevmodel": "https://jevmodel.org",
     "typesafe": "https://api.typesafe.ai",
+    # 第三方代理：协议同 SystemOne，但端点是 /api/v1/decide
+    "jevtypesafeai": "https://jevtypesafeai.com",
 }
 
 # ── 接口协议 ────────────────────────────────────────────────────────────
@@ -108,21 +110,40 @@ def budget_seconds(cfg) -> float:
     return max(1.0, min(20.0, budget))
 
 
-def normalize_base_url(base, api_format: str = API_FORMAT_SYSTEMONE):
-    """把用户填的地址收敛成完整端点；地址里带了别的协议尾缀时一并换掉。"""
+def normalize_base_url(
+    base,
+    api_format: str = API_FORMAT_SYSTEMONE,
+    endpoint_path: str = "",
+):
+    """把用户填的地址收敛成完整端点。
+
+    endpoint_path 非空时用它当路径（第三方代理如 jevtypesafeai.com 的
+    /api/v1/decide）；留空则按 api_format 取默认路径。
+    """
     base = str(base or "").strip().rstrip("/")
     if not base:
         base = GATEWAYS["jevmodel"]
-    suffix = ENDPOINT_PATHS.get(api_format, ENDPOINT_PATHS[API_FORMAT_SYSTEMONE])
+    suffix = str(endpoint_path or "").strip()
+    if suffix and not suffix.startswith("/"):
+        suffix = "/" + suffix
+    if not suffix:
+        suffix = ENDPOINT_PATHS.get(api_format, ENDPOINT_PATHS[API_FORMAT_SYSTEMONE])
     if base.endswith(suffix):
         return base
     for other in ENDPOINT_PATHS.values():
         if base.endswith(other):
             base = base[: -len(other)]
             break
-    if base.endswith("/v1"):
+    if base.endswith("/v1") and suffix.startswith("/v1/"):
         return base + suffix[len("/v1"):]
     return base + suffix
+
+
+def resolve_endpoint_path(cfg) -> str:
+    """配置里的自定义端点路径；留空表示按协议自动。"""
+    if not isinstance(cfg, dict):
+        return ""
+    return str(cfg.get("endpoint_path") or "").strip()
 
 
 def resolve_api_format(cfg) -> str:
@@ -364,7 +385,9 @@ RETRYABLE_STATUS = {409, 429, 500, 502, 503, 529}
 _STATUS_BY_HTTP = {
     401: "unauthorized",
     402: "insufficient_credits",
+    403: "forbidden",
     409: "conflict",
+    413: "payload_too_large",
     422: "invalid_request",
     429: "rate_limited",
     500: "upstream_error",
@@ -404,6 +427,7 @@ class JevClient:
         self.inflight = {}
         self.closed = False
         self.tokens_remaining = None
+        self.credits_remaining = None
         self.hits = {}
         self.metrics = dict.fromkeys(
             (
@@ -429,6 +453,7 @@ class JevClient:
             | {
                 "inflight": len(self.inflight),
                 "tokens_remaining": self.tokens_remaining,
+                "credits_remaining": self.credits_remaining,
                 "last": self.last.copy(),
             }
         )
@@ -464,7 +489,7 @@ class JevClient:
 
         api_format = resolve_api_format(cfg)
         base = str(cfg.get("base_url") or GATEWAYS["jevmodel"])
-        url = normalize_base_url(base, api_format)
+        url = normalize_base_url(base, api_format, resolve_endpoint_path(cfg))
         signature = hashlib.sha256(
             json.dumps([url, cfg.get("model"), cfg.get("api_key")]).encode()
         ).hexdigest()
@@ -601,6 +626,13 @@ class JevClient:
                         if remaining is not None:
                             try:
                                 self.tokens_remaining = int(str(remaining).strip())
+                            except (TypeError, ValueError):
+                                pass
+                        # 第三方代理把余额放在 usage 里（美元）
+                        credits = (usage or {}).get("credits_remaining_usd")
+                        if credits is not None:
+                            try:
+                                self.credits_remaining = float(credits)
                             except (TypeError, ValueError):
                                 pass
                     else:

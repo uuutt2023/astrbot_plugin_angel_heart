@@ -128,6 +128,11 @@ async def main() -> int:
         choices=["systemone", "decisions"],
         help="接口协议：systemone＝POST /v1/systemone（默认），decisions＝POST /v1/decisions",
     )
+    parser.add_argument(
+        "--endpoint-path",
+        default="",
+        help="自定义端点路径（如 jevtypesafeai.com 的 /api/v1/decide）；留空按协议自动",
+    )
     args = parser.parse_args()
 
     api_key = args.api_key or os.environ.get("JEVMODEL_API_KEY", "")
@@ -135,7 +140,7 @@ async def main() -> int:
         print("需要 API Key：设置环境变量 JEVMODEL_API_KEY 或用 --api-key 传入")
         return 2
 
-    url = normalize_base_url(args.base_url)
+    url = normalize_base_url(args.base_url, args.api_format, args.endpoint_path)
     print("=" * 68)
     print(f"目标：{url}")
     print(f"模型：{args.model}")
@@ -148,6 +153,7 @@ async def main() -> int:
         "timeout_sec": args.timeout_sec,
         "retries": args.retries,
         "api_format": args.api_format,
+        "endpoint_path": args.endpoint_path,
     }
 
     results = []
