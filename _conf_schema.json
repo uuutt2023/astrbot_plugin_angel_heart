@@ -316,7 +316,17 @@
       "proxy_protocol": {
         "type": "string",
         "description": "请求协议",
-        "hint": "网关里登记的协议名，决定转发到哪个上游入口。",
+        "hint": "网关里登记的协议类型。同一协议可以登记多个入口，网关会按优先级和负载均衡挑。",
+        "options": [
+          "systemone",
+          "decisions",
+          "custom"
+        ],
+        "labels": [
+          "SystemOne（官方 Jev / TypeSafe）",
+          "OpenAI Decisions",
+          "Custom（自定义协议）"
+        ],
         "default": "systemone"
       },
       "reply_mode": {

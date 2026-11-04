@@ -159,7 +159,8 @@ Jev 的 Key、地址、模型、超时统一由 [astrbot_plugin_jev_gateway](htt
 管理。本插件的设置里只填两项——
 
 - **网关代理地址**：如 `http://127.0.0.1:8770`
-- **请求协议**：网关里登记的协议名，如 `systemone`
+- **请求协议**：固定三项下拉（SystemOne / OpenAI Decisions / Custom），
+  网关里同协议登记多个入口时按优先级和负载均衡挑
 
 协议翻译（SystemOne ⇄ OpenAI Decisions）、重试、30 秒去重缓存、余额追踪都在网关那边，
 本插件只管发问题、读答案。换网关时只改网关一处。
