@@ -20,6 +20,7 @@ async def fake_gateway():
         received["auth"] = request.headers.get("authorization")
         received["token"] = request.headers.get("x-jev-gateway-token")
         received["idem"] = request.headers.get("idempotency-key")
+        received["client"] = request.headers.get("x-jev-gateway-client")
         body = await request.read()
         received["body"] = json.loads(body) if body else {}
         if state["status"] != 200:
@@ -198,3 +199,16 @@ class TestGatewayTokenFromUrl:
         finally:
             await client.close()
         assert fake_gateway["token"] is None
+
+
+@pytest.mark.asyncio
+async def test_request_carries_client_name(fake_gateway):
+    """客户端自报家门，网关据此在拓扑图里显示这个插件。"""
+    from astrbot_plugin_angel_heart.core.jev_transport import JevClient
+
+    client = JevClient()
+    cfg = {"proxy_url": fake_gateway["base"], "proxy_protocol": "systemone"}
+    result = await client.evaluate(cfg, "hi", QUESTION)
+    assert result["status"] == "ready"
+    assert fake_gateway["client"] == "astrbot_plugin_angel_heart"
+    await client.close()

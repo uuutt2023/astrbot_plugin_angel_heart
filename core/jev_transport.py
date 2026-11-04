@@ -139,6 +139,8 @@ class JevClient:
         headers = {
             "Content-Type": "application/json",
             "Idempotency-Key": idem,
+            # 自报家门，网关据此画出「接入对象 → 网关」的拓扑图
+            "X-Jev-Gateway-Client": "astrbot_plugin_angel_heart",
         }
         token = resolve_token(proxy_base)
         if token:
