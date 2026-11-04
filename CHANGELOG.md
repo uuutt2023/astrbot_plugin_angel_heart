@@ -3,6 +3,10 @@
 ## 未发布
 
 ### Added
+- **Docker 适配**：容器内的 `127.0.0.1` 指向容器自己。网关地址支持写成
+  `http://<令牌>@<网关容器名>:8770`，令牌自动作为 `X-Jev-Gateway-Token` 头发给网关；
+  连不上时错误提示会直接说清怎么查（网关是否启用、端口是否一致、跨容器要绑
+  `0.0.0.0` 并用容器名）。
 - **Jev 接入收拢到网关**：判定请求的传输层搬到了
   [astrbot_plugin_jev_gateway](https://github.com/uuutt2023/astrbot_plugin_jev_gateway)——
   协议翻译（SystemOne ⇄ OpenAI Decisions）、重试、30 秒去重缓存、余额追踪都由网关负责。

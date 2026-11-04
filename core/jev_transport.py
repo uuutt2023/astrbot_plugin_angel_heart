@@ -79,6 +79,35 @@ def resolve_proxy(cfg) -> tuple[str, str]:
     return base, protocol
 
 
+def resolve_token(proxy_url: str) -> str:
+    """从网关地址里取访问令牌。
+
+    格式 http://<token>@host:port —— 这样客户端仍然只填「网关地址 + 协议名」
+    两项，令牌跟着地址走。Docker 跨容器时网关要绑 0.0.0.0，令牌就是唯一的
+    防线。
+    """
+    url = str(proxy_url or "")
+    if "@" not in url:
+        return ""
+    _, sep, rest = url.partition("://")
+    if not sep:
+        rest = url
+    userinfo, _, _host = rest.rpartition("@")
+    return userinfo.strip()
+
+
+def strip_userinfo(proxy_url: str) -> str:
+    """把地址里的 userinfo（令牌）去掉，剩下的才是真正要连的地址。"""
+    url = str(proxy_url or "")
+    if "@" not in url:
+        return url
+    scheme, _, rest = url.partition("://")
+    if not rest:
+        return url
+    _, _, host = rest.rpartition("@")
+    return f"{scheme}://{host}"
+
+
 class JevClient:
     """只跟网关打交道的客户端。"""
 
@@ -103,7 +132,7 @@ class JevClient:
                 "error_message": "未配置网关代理地址",
             }
 
-        url = f"{proxy_base}/jev/{protocol}"
+        url = f"{strip_userinfo(proxy_base)}/jev/{protocol}"
         payload = {"state": state, "questions": questions}
         body = json.dumps(payload, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
         idem = idem or new_idempotency_key()
@@ -111,6 +140,9 @@ class JevClient:
             "Content-Type": "application/json",
             "Idempotency-Key": idem,
         }
+        token = resolve_token(proxy_base)
+        if token:
+            headers["X-Jev-Gateway-Token"] = token
         timeout = budget_seconds(cfg)
 
         if self.session is None or self.session.closed:
@@ -155,7 +187,11 @@ class JevClient:
             result = {
                 "status": "error",
                 "retryable": True,
-                "error_message": f"连不上网关：{exc}",
+                "error_message": (
+                    f"连不上网关（{url}）：{exc}。"
+                    "检查网关插件是否启用、监听端口是否一致；"
+                    "Docker 跨容器时网关要绑 0.0.0.0，地址要用容器名而不是 127.0.0.1。"
+                ),
             }
         except (asyncio.TimeoutError, TimeoutError):
             self.metrics["errors"] += 1
