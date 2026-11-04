@@ -353,6 +353,18 @@ class TestJevDecider:
         assert "api_key" in result["error"]
 
     @pytest.mark.asyncio
+    async def test_gateway_proxy_does_not_require_api_key(self):
+        """走网关时不用自己的 Key。"""
+        from astrbot_plugin_angel_heart.core.jev_decider import JevDecider
+
+        result = await JevDecider().decide(
+            {"proxy_url": "http://127.0.0.1:8770", "proxy_protocol": "systemone"},
+            [make_msg("A", "你好")],
+        )
+        assert result["ok"] is False
+        assert "api_key" not in result["error"]
+
+    @pytest.mark.asyncio
     async def test_empty_dialogue_returns_error(self):
         from astrbot_plugin_angel_heart.core.jev_decider import JevDecider
 

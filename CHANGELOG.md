@@ -3,6 +3,11 @@
 ## 未发布
 
 ### Added
+- **支持 Jev 决策网关**：新增「网关代理地址」与「请求协议」两项配置。填了代理
+  地址后，请求会转给 `astrbot_plugin_jev_gateway` 由它按协议名中转到上游，插件
+  自己就不用再填 Key 和地址了——换网关只改网关一处。代理地址留空时行为与以前
+  完全一样（直连）。
+  `core/jev_transport.py`（`resolve_proxy`）、`_conf_schema.json`。
 - **支持 JevTypeSafeAI 第三方代理**：新增「端点路径」配置项，填 `/api/v1/decide`
   即可对接 `https://jevtypesafeai.com`——它的协议与 SystemOne 完全一致，只是路径带
   `/api` 前缀。另外补上 403（账户未激活）与 413（请求体过大）的状态映射，

@@ -146,6 +146,29 @@ def resolve_endpoint_path(cfg) -> str:
     return str(cfg.get("endpoint_path") or "").strip()
 
 
+def _request_headers(cfg: dict, idempotency: str) -> dict[str, str]:
+    """组请求头。走网关时不带鉴权——网关会换成上游入口自己的 Key。"""
+    headers = {
+        "Content-Type": "application/json",
+        "Idempotency-Key": idempotency,
+    }
+    api_key = str(cfg.get("api_key") or "").strip()
+    if api_key and not resolve_proxy(cfg)[0]:
+        headers["Authorization"] = f"Bearer {api_key}"
+    return headers
+
+
+def resolve_proxy(cfg) -> tuple[str, str]:
+    """网关代理地址与协议名；没配网关返回 ("", "")。"""
+    if not isinstance(cfg, dict):
+        return "", ""
+    base = str(cfg.get("proxy_url") or "").strip().rstrip("/")
+    if not base:
+        return "", ""
+    protocol = str(cfg.get("proxy_protocol") or "").strip() or "systemone"
+    return base, protocol
+
+
 def resolve_api_format(cfg) -> str:
     """读出配置里的接口协议；认不出来就按 SystemOne 走（保持旧行为）。"""
     value = ""
@@ -475,7 +498,9 @@ class JevClient:
         # cfg / state / questions 在传输层全程只读，深拷贝纯属浪费：
         # state 可达百万字符，深拷贝一次要按 MB 级复制。
         cfg = dict(cfg)
-        if not str(cfg.get("api_key") or "").strip():
+        proxy_base, proxy_protocol = resolve_proxy(cfg)
+        # 走网关时不用自己的 Key：鉴权由网关那侧的入口配置负责。
+        if not proxy_base and not str(cfg.get("api_key") or "").strip():
             return {"status": "unconfigured"}
 
         problems = validate_request(state, questions)
@@ -489,7 +514,11 @@ class JevClient:
 
         api_format = resolve_api_format(cfg)
         base = str(cfg.get("base_url") or GATEWAYS["jevmodel"])
-        url = normalize_base_url(base, api_format, resolve_endpoint_path(cfg))
+        if proxy_base:
+            # 网关按协议名转发，请求路径由网关决定
+            url = f"{proxy_base}/jev/{proxy_protocol}"
+        else:
+            url = normalize_base_url(base, api_format, resolve_endpoint_path(cfg))
         signature = hashlib.sha256(
             json.dumps([url, cfg.get("model"), cfg.get("api_key")]).encode()
         ).hexdigest()
@@ -592,11 +621,7 @@ class JevClient:
                 # 直接发已序列化的请求体：与 aiohttp 的 json= 走同一份字节，
                 # 但不用让它再 dumps 一遍。
                 data=payload_json.encode(),
-                headers={
-                    "Authorization": "Bearer " + str(cfg["api_key"]),
-                    "Content-Type": "application/json",
-                    "Idempotency-Key": idempotency,
-                },
+                headers=_request_headers(cfg, idempotency),
                 timeout=aiohttp.ClientTimeout(total=timeout),
                 allow_redirects=False,
             ) as response:

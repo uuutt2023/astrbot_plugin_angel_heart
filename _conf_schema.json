@@ -319,6 +319,18 @@
         "hint": "网关根地址。可选：jevmodel.org（官方）、api.typesafe.ai、jevtypesafeai.com（第三方代理）。",
         "default": "https://jevmodel.org"
       },
+      "proxy_url": {
+        "type": "string",
+        "description": "网关代理地址",
+        "hint": "Jev 网关的地址，例如 http://127.0.0.1:8770。留空＝直连下面的接口地址。",
+        "default": ""
+      },
+      "proxy_protocol": {
+        "type": "string",
+        "description": "请求协议",
+        "hint": "网关里登记的协议名，决定转发到哪个上游入口。",
+        "default": "systemone"
+      },
       "api_format": {
         "type": "string",
         "description": "接口协议",
