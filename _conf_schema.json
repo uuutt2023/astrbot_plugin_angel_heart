@@ -372,6 +372,14 @@
         "description": "带入的历史条数",
         "hint": "除当前消息外额外带入的历史条数。",
         "default": 4
+      },
+      "prompt": {
+        "type": "text",
+        "description": "Jev 提示词",
+        "hint": "留空＝用内置提示词。改这里就是改问 Jev 的话。",
+        "editor_mode": true,
+        "editor_language": "markdown",
+        "default": ""
       }
     }
   },

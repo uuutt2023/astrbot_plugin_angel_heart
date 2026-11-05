@@ -1048,3 +1048,32 @@ class TestPerformanceOptimizations:
             payload, ensure_ascii=False, separators=(",", ":")
         ).encode() == expected
 
+
+class TestCustomPrompt:
+    """Jev 提示词可以自己改。"""
+
+    def test_default_prompt_used_when_empty(self):
+        from astrbot_plugin_angel_heart.core.jev_decider import (
+            DEFAULT_SHOULD_REPLY_INSTRUCTIONS,
+            build_questions,
+        )
+
+        questions = build_questions("")
+        assert questions["should_reply"]["instructions"] == DEFAULT_SHOULD_REPLY_INSTRUCTIONS
+        assert build_questions()["should_reply"]["instructions"] == DEFAULT_SHOULD_REPLY_INSTRUCTIONS
+
+    def test_custom_prompt_replaces_main_question(self):
+        from astrbot_plugin_angel_heart.core.jev_decider import build_questions
+
+        questions = build_questions("  只在有人点名时才回话  ")
+        assert questions["should_reply"]["instructions"] == "只在有人点名时才回话"
+        # 其余判断不受影响
+        assert questions["is_questioned"]["instructions"]
+        assert questions["reply_strategy"]["type"] == "choice"
+
+    def test_custom_prompt_keeps_question_shape(self):
+        from astrbot_plugin_angel_heart.core.jev_decider import build_questions
+
+        question = build_questions("自定义")["should_reply"]
+        assert question["type"] == "noul"
+        assert "true" in question["criteria"]

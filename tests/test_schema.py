@@ -27,3 +27,11 @@ def test_client_only_keeps_gateway_address_and_protocol():
 
 def test_gateway_address_is_still_configurable():
     assert JEV["proxy_url"]["type"] == "string"
+
+
+def test_jev_prompt_is_customizable():
+    """Jev 提示词要能自己改，类型是 text（渲染成大文本框）。"""
+    item = JEV["prompt"]
+    assert item["type"] == "text"
+    assert item["default"] == ""
+    assert item["editor_mode"] is True

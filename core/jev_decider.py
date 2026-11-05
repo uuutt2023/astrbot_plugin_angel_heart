@@ -104,22 +104,29 @@ def describe_failure(result: Dict[str, Any]) -> str:
     return " · ".join(parts)
 
 
-def build_questions() -> Dict[str, Dict[str, Any]]:
+#: 主判定题的默认提示词。用户在配置里填了「Jev 提示词」就用用户的。
+DEFAULT_SHOULD_REPLY_INSTRUCTIONS = (
+    "Should the assistant reply in this group chat right now? "
+    "Judge with the conversation context. A reply is warranted when "
+    "the assistant is addressed, asked for something, or can add real "
+    "value without interrupting. Chatter between other members does "
+    "not warrant a reply."
+)
+
+
+def build_questions(prompt: str = "") -> Dict[str, Dict[str, Any]]:
     """构造决策请求的问题集合（4 道，落在文档的 8 道上限内）。
 
     题型直接用 Jev 的 noul / choice 形态：noul 判「命题为真」的概率，
     choice 从固定选项里选一个。
+
+    prompt 非空时替换主判定题（should_reply）的 instructions，其余判断保持内置。
     """
+    instructions = (prompt or "").strip() or DEFAULT_SHOULD_REPLY_INSTRUCTIONS
     return {
         "should_reply": {
             "type": "noul",
-            "instructions": (
-                "Should the assistant reply in this group chat right now? "
-                "Judge with the conversation context. A reply is warranted when "
-                "the assistant is addressed, asked for something, or can add real "
-                "value without interrupting. Chatter between other members does "
-                "not warrant a reply."
-            ),
+            "instructions": instructions,
             "criteria": {
                 "true": (
                     "A relevant, helpful reply to the current message is warranted: "
@@ -334,7 +341,7 @@ class JevDecider:
         if ledger:
             state = f"{state}\n\n[Assistant work ledger]\n{ledger}"
 
-        questions = build_questions()
+        questions = build_questions(str(cfg.get("prompt") or ""))
         deadline = time.monotonic() + timeout
         result: Dict[str, Any] = {"status": "error"}
         # 一次逻辑调用一把幂等键：重试复用它才不会重复计费。
