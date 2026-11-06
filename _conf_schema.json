@@ -373,6 +373,18 @@
         "hint": "除当前消息外额外带入的历史条数。",
         "default": 4
       },
+      "ignore_image_judgment": {
+        "type": "bool",
+        "description": "忽视图片判断",
+        "hint": "打开后图片不参与 Jev 判断：纯图片消息直接不回复，上下文里的图片占位也清掉。",
+        "default": false
+      },
+      "transcribe_image_with_model": {
+        "type": "bool",
+        "description": "用图片理解模型转述",
+        "hint": "不忽视图片时打开：先用插件配置的图片理解模型转述图片，再把转述结果交给 Jev。",
+        "default": false
+      },
       "prompt": {
         "type": "text",
         "description": "Jev 提示词",

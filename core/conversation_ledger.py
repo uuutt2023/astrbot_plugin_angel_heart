@@ -14,6 +14,9 @@ from . import utils
 # 条件导入：当缺少astrbot依赖时使用Mock
 from astrbot.api import logger
 
+# 通用图片转述提示词：Jev 判定与自动转述共用，dHash 缓存因此可以互通
+GENERIC_CAPTION_PROMPT = "这是一张群聊图片，根据情景准确描述该图片"
+
 
 class ConversationLedger:
     """
@@ -1158,6 +1161,84 @@ class ConversationLedger:
             return "图片理解失败：视觉 Provider 未返回文字结果。"
         return result
 
+    async def caption_message_images(
+        self,
+        chat_id: str,
+        message: Dict,
+        caption_provider_id: str,
+        astr_context=None,
+    ) -> str:
+        """给一条消息里的图片转述，返回转述文本（拿不到时返回空串）。
+
+        顺序：消息已有转述 → dHash 缓存 → 调图片理解模型（结果写回缓存）。
+        不改消息本身，调用方拿到的只是文本。
+        """
+        if not isinstance(message, dict):
+            return ""
+
+        existing = str(message.get("image_caption") or "").strip()
+        if existing:
+            return existing
+
+        if not caption_provider_id or not astr_context:
+            return ""
+
+        provider = astr_context.get_provider_by_id(caption_provider_id)
+        if not provider:
+            return ""
+
+        refs = self._extract_image_refs_from_content(message.get("content"))
+        if not refs:
+            return ""
+
+        raw_image_data = await self._load_image_bytes(refs[0])
+        if not raw_image_data:
+            logger.warning(f"AngelHeart[{chat_id}]: 图片读取失败，无法转述")
+            return ""
+
+        img_dhash = self._compute_dhash(raw_image_data)
+        if img_dhash:
+            with self._db_lock:
+                self.db_cursor.execute(
+                    "SELECT caption FROM image_content_cache WHERE dhash = ?", (img_dhash,)
+                )
+                row = self.db_cursor.fetchone()
+            if row and row[0]:
+                logger.debug(f"AngelHeart[{chat_id}]: 图片转述缓存命中 (dHash: {img_dhash})")
+                return str(row[0]).strip()
+
+        data_url = self._build_caption_image_data_url(raw_image_data)
+        if not data_url:
+            data_url = self._build_original_image_data_url(raw_image_data)
+        if not data_url:
+            logger.warning(f"AngelHeart[{chat_id}]: 图片编码失败，无法转述")
+            return ""
+
+        try:
+            response = await provider.text_chat(
+                prompt=GENERIC_CAPTION_PROMPT,
+                image_urls=[data_url],
+            )
+        except Exception as exc:  # noqa: BLE001
+            logger.warning(f"AngelHeart[{chat_id}]: 图片转述调用失败: {exc}")
+            return ""
+
+        caption = str(getattr(response, "completion_text", "") or "").strip()
+        if not caption:
+            return ""
+
+        if img_dhash:
+            try:
+                with self._db_lock:
+                    self.db_cursor.execute(
+                        "INSERT OR REPLACE INTO image_content_cache (dhash, caption, timestamp) VALUES (?, ?, ?)",
+                        (img_dhash, caption, time.time()),
+                    )
+                    self.db_conn.commit()
+            except sqlite3.IntegrityError:
+                logger.debug(f"AngelHeart[{chat_id}]: 图片转述缓存写入冲突，已忽略")
+        return caption
+
     async def generate_captions_for_chat(self, chat_id: str, caption_provider_id: str, astr_context=None) -> int:
         """
         为指定会话中的所有未转述图片生成转述
@@ -1182,8 +1263,8 @@ class ConversationLedger:
 
         # 获取配置
         try:
-            img_cap_prompt = "这是一张群聊图片，根据情景准确描述该图片"
-        except Exception as e:
+            img_cap_prompt = GENERIC_CAPTION_PROMPT
+        except Exception as e:  # noqa: BLE001
             logger.error(f"AngelHeart[{chat_id}]: 获取配置失败: {e}")
             return 0
 

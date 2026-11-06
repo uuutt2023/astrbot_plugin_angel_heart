@@ -35,3 +35,14 @@ def test_jev_prompt_is_customizable():
     assert item["type"] == "text"
     assert item["default"] == ""
     assert item["editor_mode"] is True
+
+
+def test_image_handling_switches_exist():
+    """图片处理两个开关都在，且默认关闭（保持原行为）。"""
+    ignore = JEV["ignore_image_judgment"]
+    transcribe = JEV["transcribe_image_with_model"]
+    assert ignore["type"] == "bool"
+    assert ignore["default"] is False
+    assert transcribe["type"] == "bool"
+    assert transcribe["default"] is False
+    assert ignore["hint"] and transcribe["hint"]

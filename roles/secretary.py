@@ -12,6 +12,14 @@ from ..core.jev_decider import (
     build_decision,
     decide_should_reply,
 )
+from ..core.jev_images import (
+    MODE_CAPTION,
+    MODE_IGNORE,
+    describe_mode,
+    prepare_messages_for_jev,
+    resolve_image_mode,
+    split_by_mode,
+)
 from ..core.llm_analyzer import LLMAnalyzer
 from ..models.analysis_result import SecretaryDecision
 from ..core.angel_heart_status import AngelHeartStatus
@@ -214,6 +222,73 @@ class Secretary:
         except Exception as e:
             return self._handle_analysis_error(e, "秘书处理过程", chat_id)
 
+    async def _jev_prepare_messages(
+        self,
+        chat_id: str,
+        recent_dialogue: List[Dict],
+        db_history: List[Dict],
+    ) -> tuple:
+        """按图片模式预处理交给 Jev 的消息。
+
+        Returns:
+            tuple: (当前消息, 历史消息, 是否跳过判定)。
+        """
+        cfg = self.config_manager.jev_decision
+        mode = resolve_image_mode(cfg)
+        if mode == MODE_IGNORE:
+            recent, skip = split_by_mode(recent_dialogue, mode)
+            history, _ = split_by_mode(db_history, mode)
+            if skip:
+                logger.info(
+                    f"AngelHeart[{chat_id}]: 当前消息只有图片，已按配置忽视图片判断"
+                )
+            return (
+                await prepare_messages_for_jev(recent, mode),
+                await prepare_messages_for_jev(history, mode),
+                skip,
+            )
+
+        if mode == MODE_CAPTION:
+            captioner = self._jev_captioner(chat_id)
+            logger.info(
+                f"AngelHeart[{chat_id}]: 图片处理模式={describe_mode(mode)}"
+            )
+            return (
+                await prepare_messages_for_jev(recent_dialogue, mode, captioner),
+                await prepare_messages_for_jev(db_history, mode, captioner),
+                False,
+            )
+
+        return list(recent_dialogue or []), list(db_history or []), False
+
+    def _jev_captioner(self, chat_id: str):
+        """构造图片转述回调：优先用账本已有转述，否则调插件配置的图片理解模型。"""
+
+        async def captioner(msg: Dict) -> str:
+            ledger = getattr(self.angel_context, "conversation_ledger", None)
+            if ledger is None:
+                return ""
+            provider_id = str(
+                getattr(self.config_manager, "image_caption_provider_id", "") or ""
+            ).strip()
+            return await ledger.caption_message_images(
+                chat_id, msg, provider_id, self.context
+            )
+
+        return captioner
+
+    def _image_only_decision(self, chat_id: str) -> SecretaryDecision:
+        """纯图片消息且已配置忽视：直接判定不回复。"""
+        logger.info(f"AngelHeart[{chat_id}]: 纯图片消息，本轮不回复")
+        return SecretaryDecision(
+            should_reply=False,
+            reply_strategy="图片消息（已忽视）",
+            topic="未知",
+            entities=[],
+            facts=[],
+            keywords=[],
+        )
+
     async def _decide_by_jev(
         self,
         recent_dialogue: List[Dict],
@@ -224,10 +299,15 @@ class Secretary:
         """只用 Jev 决策模型产出决策（不调用轻量秘书模型）。"""
         cfg = self.config_manager.jev_decision
         alias = self._alias_for(chat_id)
+        recent, history, skip = await self._jev_prepare_messages(
+            chat_id, recent_dialogue, db_history
+        )
+        if skip:
+            return self._image_only_decision(chat_id)
         raw = await self.jev_decider.decide(
             cfg,
-            recent_dialogue,
-            historical_context=db_history,
+            recent,
+            historical_context=history,
             alias=alias,
             work_ledger_text=work_ledger_text,
         )
@@ -266,10 +346,15 @@ class Secretary:
             门控概率用于让后续的发言程度跟着 Jev 的把握走。
         """
         cfg = self.config_manager.jev_decision
+        recent, history, skip = await self._jev_prepare_messages(
+            chat_id, recent_dialogue, db_history
+        )
+        if skip:
+            return self._image_only_decision(chat_id), 0.0
         raw = await self.jev_decider.decide(
             cfg,
-            recent_dialogue,
-            historical_context=db_history,
+            recent,
+            historical_context=history,
             alias=self._alias_for(chat_id),
             work_ledger_text=work_ledger_text,
         )
