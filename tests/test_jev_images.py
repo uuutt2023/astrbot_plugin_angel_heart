@@ -320,3 +320,126 @@ class TestSecretaryImageHandling:
         assert secretary.jev_decider.decide.await_count == 1
         sent = secretary.jev_decider.decide.await_args.args[1]
         assert sent[0]["content"] == "[图片无法读取]"
+
+
+LEDGER_SAMPLE = """助理工作账本：
+- [本轮] 触发锚点=-1144523218；任务=AI时代的Steam管家出现了 [图片] [图片]
+- [已完成] 触发锚点=63702767；任务=这叫暗访记者；结果=不回复：继续观察
+- [已完成] 触发锚点=-2138075607；任务=[图片]；结果=不回复：图片消息（已忽视）
+- [已完成] 触发锚点=605605276；任务=[At:327778013] 打麻将；结果=不回复：继续观察
+- [已完成] 触发锚点=1526790835；任务=[图片]；结果=不回复：图片消息（已忽视）
+本轮待处理：AI时代的Steam管家出现了 [图片] [图片]。这是当前事件对应的工作，可以继续决策。"""
+
+
+class TestStripLedgerImages:
+    """账本里的图片占位要一并剔除。"""
+
+    def test_placeholders_removed(self):
+        from astrbot_plugin_angel_heart.core.jev_images import strip_ledger_images
+
+        out = strip_ledger_images(LEDGER_SAMPLE)
+        assert "[图片]" not in out
+        assert "任务=AI时代的Steam管家出现了" in out
+
+    def test_image_only_entries_dropped(self):
+        """任务只剩图片的条目整条去掉。"""
+        from astrbot_plugin_angel_heart.core.jev_images import strip_ledger_images
+
+        out = strip_ledger_images(LEDGER_SAMPLE)
+        assert "图片消息（已忽视）" not in out
+        assert "触发锚点=-2138075607" not in out
+        assert "触发锚点=1526790835" not in out
+
+    def test_other_entries_kept(self):
+        from astrbot_plugin_angel_heart.core.jev_images import strip_ledger_images
+
+        out = strip_ledger_images(LEDGER_SAMPLE)
+        assert "这叫暗访记者" in out
+        assert "打麻将" in out
+        assert "触发锚点=63702767" in out
+
+    def test_pending_line_kept_without_images(self):
+        from astrbot_plugin_angel_heart.core.jev_images import strip_ledger_images
+
+        out = strip_ledger_images(LEDGER_SAMPLE)
+        assert "本轮待处理：AI时代的Steam管家出现了。这是当前事件对应的工作，可以继续决策。" in out
+
+    def test_all_entries_gone_returns_empty(self):
+        from astrbot_plugin_angel_heart.core.jev_images import strip_ledger_images
+
+        text = "助理工作账本：\n- [已完成] 触发锚点=1；任务=[图片]；结果=不回复"
+        assert strip_ledger_images(text) == ""
+
+    def test_empty_input(self):
+        from astrbot_plugin_angel_heart.core.jev_images import strip_ledger_images
+
+        assert strip_ledger_images("") == ""
+        assert strip_ledger_images("   ") == ""
+
+
+class TestDecideStripsLedgerImages:
+    """忽视图片时，账本里的图片信息不进上下文。"""
+
+    def _config(self, **jev_overrides):
+        from astrbot_plugin_angel_heart.core.config_manager import ConfigManager
+
+        jev = {
+            "enabled": True,
+            "proxy_url": "http://127.0.0.1:8770",
+            "proxy_protocol": "systemone",
+            "max_state_chars": 1200,
+            "history_rounds": 4,
+        }
+        jev.update(jev_overrides)
+        return ConfigManager(
+            {
+                "analyzer_model": "mock-model",
+                "decision_backend": "jev",
+                "jev_decision": jev,
+                "wake_interaction": {"alias": "fairy"},
+                "timing": {},
+                "leave_reply": {},
+                "access_control": {},
+                "context_compression": {},
+                "output_rewrite": {},
+            }
+        )
+
+    async def _state_with_ledger(self, cfg):
+        from astrbot_plugin_angel_heart.core.jev_decider import JevDecider
+
+        decider = JevDecider()
+        captured = {}
+
+        async def fake_evaluate(cfg, state, questions, idem=None):
+            captured["state"] = state
+            return {
+                "status": "ready",
+                "answers": {"should_reply": {"type": "noul", "noul": 0.9}},
+            }
+
+        decider.client.evaluate = fake_evaluate
+        try:
+            await decider.decide(
+                cfg,
+                [make_text_msg(text="AI时代的Steam管家出现了")],
+                work_ledger_text=LEDGER_SAMPLE,
+            )
+        finally:
+            await decider.close()
+        return captured["state"]
+
+    @pytest.mark.asyncio
+    async def test_ignore_mode_strips_ledger_images(self):
+        state = await self._state_with_ledger(
+            self._config(ignore_image_judgment=True).jev_decision
+        )
+        assert "[图片]" not in state
+        assert "图片消息（已忽视）" not in state
+        assert "本轮待处理：AI时代的Steam管家出现了。" in state
+
+    @pytest.mark.asyncio
+    async def test_keep_mode_keeps_ledger_images(self):
+        """默认模式不动账本。"""
+        state = await self._state_with_ledger(self._config().jev_decision)
+        assert "[图片]" in state

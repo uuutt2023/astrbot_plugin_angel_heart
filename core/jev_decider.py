@@ -25,6 +25,7 @@ from astrbot.api import logger
 
 from ..models.analysis_result import SecretaryDecision
 from .jev_air import build_air_context, mark_assistant_reply
+from .jev_images import MODE_IGNORE, resolve_image_mode, strip_ledger_images
 from .jev_transport import (
     DEFAULT_RETRIES,
     JevClient,
@@ -361,7 +362,10 @@ class JevDecider:
         air = ""
         if air_reading:
             air = build_air_context(
-                recent_dialogue or [], historical_context, alias=alias
+                recent_dialogue or [],
+                historical_context,
+                alias=alias,
+                image_mode=resolve_image_mode(cfg),
             )
         state = build_state(
             recent_dialogue or [],
@@ -376,6 +380,9 @@ class JevDecider:
             return {"ok": False, "error": "没有可交给 Jev 判断的对话内容"}
 
         ledger = (work_ledger_text or "").strip()
+        if ledger and air_reading and resolve_image_mode(cfg) == MODE_IGNORE:
+            # 图片被忽视时，账本里的图片占位同样是无用信息，一并剔除
+            ledger = strip_ledger_images(ledger)
         if ledger:
             state = f"{state}\n\n[Assistant work ledger]\n{ledger}"
 

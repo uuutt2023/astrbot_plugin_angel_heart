@@ -12,6 +12,8 @@ from __future__ import annotations
 import re
 from typing import Any, Dict, List, Optional
 
+from .jev_images import MODE_IGNORE
+
 # 明确表示「别再说了」的信号词
 REFUSAL_PATTERNS = (
     "别烦我",
@@ -148,6 +150,7 @@ def build_air_context(
     recent_dialogue: Optional[List[Dict[str, Any]]],
     historical_context: Optional[List[Dict[str, Any]]],
     alias: str = "AngelHeart",
+    image_mode: str = "",
 ) -> str:
     """构造读空气上下文块（没有可用信号时返回空串）。
 
@@ -195,6 +198,10 @@ def build_air_context(
         )
 
     replies = assistant_replies(recent_dialogue, historical_context)
+    if image_mode == MODE_IGNORE:
+        # 图片被忽视时，助理自己说过的话里的图片占位也是无用信息
+        replies = [_IMAGE_PLACEHOLDER_RE.sub(" ", r).strip() for r in replies]
+        replies = [r for r in replies if r]
     if replies:
         lines.append(
             "The assistant's own earlier replies (do not repeat them): "

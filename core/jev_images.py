@@ -19,6 +19,8 @@ MODE_CAPTION = "caption"
 
 # 平台 outline 给出的通用图片占位（不带编号）
 _IMAGE_PLACEHOLDER_RE = re.compile(r"(?:\s*\[图片\]\s*)+")
+# 占位被剔除后留下的空格会顶在中文标点前面
+_SPACE_BEFORE_CJK_RE = re.compile(r"\s+(?=[。，、；：？！）】」』])")
 
 Captioner = Callable[[Dict[str, Any]], Awaitable[str]]
 
@@ -128,6 +130,63 @@ def describe_mode(mode: str) -> str:
         MODE_IGNORE: "忽视图片",
         MODE_CAPTION: "转述后交给 Jev",
     }.get(mode, "原样保留")
+
+
+# 账本条目的固定结构：- [标签] 触发锚点=xxx；任务=yyy；结果=zzz
+_LEDGER_TASK_MARK = "；任务="
+_LEDGER_RESULT_MARK = "；结果="
+_PENDING_PREFIX = "本轮待处理："
+_PENDING_SUFFIX = "。这是当前事件对应的工作，可以继续决策。"
+
+
+def strip_ledger_images(ledger_text: str) -> str:
+    """剔除账本文本里的图片占位。
+
+    任务只剩图片的条目整条去掉——图片被忽视时，这类条目对判定没有意义。
+    一条不剩时返回空串，调用方就不该再把账本塞进上下文。
+    """
+    text = (ledger_text or "").strip()
+    if not text:
+        return ""
+
+    kept: List[str] = []
+    entries = 0
+    for raw in text.splitlines():
+        line = _SPACE_BEFORE_CJK_RE.sub("", _IMAGE_PLACEHOLDER_RE.sub(" ", raw)).strip()
+        if not line:
+            continue
+
+        task = _ledger_task(line)
+        if task is not None:
+            if not task.strip():
+                continue
+            entries += 1
+        elif line.startswith(_PENDING_PREFIX):
+            pending = line[len(_PENDING_PREFIX) :]
+            if pending.endswith(_PENDING_SUFFIX):
+                pending = pending[: -len(_PENDING_SUFFIX)]
+            if not pending.strip():
+                continue
+
+        kept.append(line)
+
+    if entries == 0:
+        return ""
+    return "\n".join(kept)
+
+
+def _ledger_task(line: str) -> Optional[str]:
+    """账本条目行里取任务文本；不是条目行返回 None。"""
+    if not line.startswith("- ["):
+        return None
+    marker = line.find(_LEDGER_TASK_MARK)
+    if marker < 0:
+        return None
+    task = line[marker + len(_LEDGER_TASK_MARK) :]
+    result_mark = task.find(_LEDGER_RESULT_MARK)
+    if result_mark >= 0:
+        task = task[:result_mark]
+    return task
 
 
 def split_by_mode(
