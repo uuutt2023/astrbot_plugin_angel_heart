@@ -24,6 +24,7 @@ from typing import Any, Dict, List, Optional
 from astrbot.api import logger
 
 from ..models.analysis_result import SecretaryDecision
+from .jev_air import build_air_context, mark_assistant_reply
 from .jev_transport import (
     DEFAULT_RETRIES,
     JevClient,
@@ -107,10 +108,15 @@ def describe_failure(result: Dict[str, Any]) -> str:
 #: 主判定题的默认提示词。用户在配置里填了「Jev 提示词」就用用户的。
 DEFAULT_SHOULD_REPLY_INSTRUCTIONS = (
     "Should the assistant reply in this group chat right now? "
-    "Judge with the conversation context. A reply is warranted when "
-    "the assistant is addressed, asked for something, or can add real "
-    "value without interrupting. Chatter between other members does "
-    "not warrant a reply."
+    "Judge from the current message and the conversation context. "
+    "A reply is warranted when the current message is addressed to the "
+    "assistant, asks it something, or when the assistant can add real value "
+    "without interrupting. "
+    "Do not reply when the message is aimed at other members, is chatter "
+    "between them, is a sticker or emoji with nothing to add, repeats what "
+    "the assistant already said, or the user recently signalled they want "
+    "less talking. "
+    "When the assistant has already replied several times in a row, raise the bar."
 )
 
 
@@ -143,7 +149,10 @@ def build_questions(prompt: str = "") -> Dict[str, Dict[str, Any]]:
             "instructions": (
                 "Is the current message directed at the assistant - a question, a "
                 "request, a mention, or an invitation for it to continue? "
-                "Judge with the conversation context."
+                "Use the current sender and the conversation context: a message "
+                "aimed at another member is not directed at the assistant, and "
+                "'you' in the text does not mean the assistant unless it is "
+                "addressed to it."
             ),
             "criteria": {
                 "true": (
@@ -162,7 +171,8 @@ def build_questions(prompt: str = "") -> Dict[str, Dict[str, Any]]:
                 "Is the current topic worth joining for the assistant - does it fit "
                 "the assistant's role, is there something useful to add, and is this "
                 "an appropriate moment to speak up? "
-                "Judge with the conversation context."
+                "Judge with the conversation context, and take the assistant's own "
+                "earlier replies and how often it has replied recently into account."
             ),
             "criteria": {
                 "true": (
@@ -179,7 +189,8 @@ def build_questions(prompt: str = "") -> Dict[str, Dict[str, Any]]:
             "type": "choice",
             "instructions": (
                 "What should the assistant do next? Pick exactly one option and "
-                "judge with the conversation context."
+                "judge with the conversation context. Do not repeat what the "
+                "assistant already said."
             ),
             "criteria": {
                 "answer_question": "Answer the question that was asked, directly and helpfully.",
@@ -198,12 +209,16 @@ def build_state(
     alias: str = "AngelHeart",
     max_chars: int = 1200,
     history_rounds: int = 4,
+    air_context: str = "",
+    mark_own_replies: bool = False,
 ) -> str:
     """把对话拼成发送给决策模型的 state。
 
     当前消息放在最前、更早的历史放在其后，超长裁剪时截掉的是旧历史而不是当前消息。
+    air_context 是读空气上下文块（当前发送者、消息指向、疲劳、防重复等信号）；
+    mark_own_replies 给助理自己的历史回复加标记，方便模型识别哪些是自己说的。
     """
-    lines: List[str] = []
+    pairs: List[tuple] = []
     for conv in list(recent_dialogue or []):
         if not isinstance(conv, dict) or not _has_content(conv):
             continue
@@ -213,13 +228,13 @@ def build_state(
             logger.debug(f"AngelHeart[Jev]: 消息格式化失败，跳过一条：{type(e).__name__}")
             continue
         if formatted:
-            lines.append(formatted)
+            pairs.append((_mark(formatted, conv, mark_own_replies), conv))
 
-    if not lines:
+    if not pairs:
         return ""
 
-    current = lines[-1]
-    history = lines[:-1]
+    current = pairs[-1][0]
+    history_pairs = pairs[:-1]
     for conv in list(historical_context or [])[-max(0, int(history_rounds)) :]:
         if not isinstance(conv, dict) or not _has_content(conv):
             continue
@@ -228,25 +243,39 @@ def build_state(
         except Exception:  # noqa: BLE001
             continue
         if formatted:
-            history.append(formatted)
+            history_pairs.append((_mark(formatted, conv, mark_own_replies), conv))
+    history = [line for line, _ in history_pairs]
 
     header = (
-        "[Scene] Group chat with an AI assistant; messages oldest first. "
-        "Current = message to judge; Context = earlier messages."
+        "[Scene] Group chat with an AI assistant. "
+        "[Current] is the message to judge, placed first. "
+        "[Context] holds the earlier messages, oldest first. "
+        "Judge the current message, not the older topic."
     )
     parts = [header, "[Current]", current]
     if history:
         parts.extend(["[Context]", "\n".join(history)])
+    air = (air_context or "").strip()
+    if air:
+        parts.append(air)
 
     state = "\n".join(parts)
     if max_chars and max_chars > 0 and len(state) > max_chars:
-        # 保留头部与当前消息，裁掉更早的历史
-        keep = len(header) + len(current) + 64
+        # 保留头部、当前消息与读空气块，裁掉更早的历史
+        keep = len(header) + len(current) + len(air) + 64
         room = max(0, max_chars - keep)
         state = "\n".join(
             [header, "[Current]", current, "[Context]", history_text(history, room)]
+            + ([air] if air else [])
         )
     return state
+
+
+def _mark(formatted: str, conv: Dict, mark_own_replies: bool) -> str:
+    """按开关决定要不要给助理自己的回复加标记。"""
+    if mark_own_replies:
+        return mark_assistant_reply(formatted, conv)
+    return formatted
 
 
 def history_text(history: List[str], room: int) -> str:
@@ -327,12 +356,21 @@ class JevDecider:
 
         max_state_chars = _int(cfg.get("max_state_chars"), 1200)
         history_rounds = _int(cfg.get("history_rounds"), 4)
+        # 读空气上下文块：当前发送者、消息指向、对话疲劳、防重复、拒绝信号
+        air_reading = bool(cfg.get("air_reading", True))
+        air = ""
+        if air_reading:
+            air = build_air_context(
+                recent_dialogue or [], historical_context, alias=alias
+            )
         state = build_state(
             recent_dialogue or [],
             historical_context,
             alias=alias,
             max_chars=max_state_chars,
             history_rounds=history_rounds,
+            air_context=air,
+            mark_own_replies=air_reading,
         )
         if not state:
             return {"ok": False, "error": "没有可交给 Jev 判断的对话内容"}

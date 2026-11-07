@@ -167,6 +167,35 @@ Jev 的 Key、地址、模型、超时统一由 [astrbot_plugin_jev_gateway](htt
 协议翻译（SystemOne ⇄ OpenAI Decisions）、重试、30 秒去重缓存、余额追踪都在网关那边，
 本插件只管发问题、读答案。换网关时只改网关一处。
 
+### 读空气增强
+
+Jev 只看得到一串对话文本，光靠它很难稳定判断「这条是不是在跟我说话」「我是不是已经回太多了」。
+参考 [astrbot_plugin_group_chat_plus](https://github.com/uuutt2023/astrbot_plugin_group_chat_plus)
+的读空气思路，插件把这些判断信号显式写进交给 Jev 的上下文：
+
+```
+[Air reading]
+Current sender: 小王 (ID: 888), role: 群友. Judge the current message from this person.
+The current message mentions @李四 - it may be aimed at another member, not the assistant.
+The assistant already replied 3 times in a row (moderate fatigue): be more selective.
+The user recently signalled they want less talking ("别烦我"); do not push the conversation.
+The assistant's own earlier replies (do not repeat them): 看着像童话绘本 | 你们说的应该是那个
+```
+
+信号全部来自账本里已有的消息，不额外调用模型：
+
+| 信号 | 用途 |
+|---|---|
+| 当前发送者 | 别把历史里别人的话当成当前消息 |
+| 消息指向 | @的是别人就别插嘴 |
+| 连续回复轮次 | 连续回太多次就该收着点 |
+| 拒绝信号 | 对方说过「别烦我」就别追着聊 |
+| 自己的历史回复 | 助理说过的话在上下文里带标记，避免复读 |
+
+同时四道判定题的提示词也写进了读空气判据（不接别人的话、不复读、不追着聊、连续回复要提高门槛）。
+
+「Jev 决策」分组里的「读空气增强」默认打开；关掉后交给 Jev 的上下文与以前完全一样。
+
 ### 图片怎么处理
 
 Jev 只吃文字，图片在它眼里就是一句「[图片]」。上下文里图片一多，判断就成了猜。

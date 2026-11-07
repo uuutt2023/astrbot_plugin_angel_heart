@@ -373,6 +373,12 @@
         "hint": "除当前消息外额外带入的历史条数。",
         "default": 4
       },
+      "air_reading": {
+        "type": "bool",
+        "description": "读空气增强",
+        "hint": "在交给 Jev 的上下文里补上当前发送者、消息指向、对话疲劳等判断信号，并给主判定题写入读空气判据。",
+        "default": true
+      },
       "ignore_image_judgment": {
         "type": "bool",
         "description": "忽视图片判断",

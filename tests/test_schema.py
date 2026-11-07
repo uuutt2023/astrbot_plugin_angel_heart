@@ -46,3 +46,11 @@ def test_image_handling_switches_exist():
     assert transcribe["type"] == "bool"
     assert transcribe["default"] is False
     assert ignore["hint"] and transcribe["hint"]
+
+
+def test_air_reading_switch_exists():
+    """读空气增强开关存在，默认打开。"""
+    item = JEV["air_reading"]
+    assert item["type"] == "bool"
+    assert item["default"] is True
+    assert item["hint"]
