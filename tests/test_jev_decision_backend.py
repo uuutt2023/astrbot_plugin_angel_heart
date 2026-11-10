@@ -302,7 +302,12 @@ class TestBuildDecision:
         )
         assert decision.reply_strategy == "加入话题"
 
-    def test_stay_silent_forces_no_reply(self):
+    def test_stay_silent_does_not_veto_reply(self):
+        """策略只说「怎么回」，不否决「回不回」。
+
+        两路答案都是保守模型给的，策略选保持沉默就把本该接的话按掉，
+        累积起来助理几乎不说话。判定权只在概率上。
+        """
         from astrbot_plugin_angel_heart.core.jev_decider import build_decision
 
         decision = build_decision(
@@ -310,7 +315,7 @@ class TestBuildDecision:
             [make_msg("A", "你好")],
             {"reply_mode": "threshold"},
         )
-        assert decision.should_reply is False
+        assert decision.should_reply is True
 
     def test_topic_falls_back_to_latest_message(self):
         from astrbot_plugin_angel_heart.core.jev_decider import build_decision
@@ -754,8 +759,8 @@ class TestReplyModeSampling:
         )
         assert abs(decision.confidence - 0.11508464306322369) < 1e-12
 
-    def test_stay_silent_overrides_sampling(self):
-        """选了 stay_silent 就一定不接，抽样也不例外。"""
+    def test_stay_silent_does_not_override_sampling(self):
+        """概率决定接不接；策略不参与抽样。"""
         from astrbot_plugin_angel_heart.core.jev_decider import build_decision
 
         for _ in range(200):
@@ -764,7 +769,7 @@ class TestReplyModeSampling:
                 [make_msg("A", "你好")],
                 {"reply_mode": "sample"},
             )
-            assert decision.should_reply is False
+            assert decision.should_reply is True
 
     def test_hybrid_gate_uses_same_mode(self):
         """hybrid 门控与最终判定用同一套口径。"""
@@ -1077,3 +1082,140 @@ class TestCustomPrompt:
         question = build_questions("自定义")["should_reply"]
         assert question["type"] == "noul"
         assert "true" in question["criteria"]
+
+
+class TestBalancedCriteria:
+    """判定题不能只往「不回复」一边倒。"""
+
+    def test_should_reply_true_branch_accepts_open_topics(self):
+        """普通聊天也要算开口的理由，不能只认「被点名或被提问」。"""
+        from astrbot_plugin_angel_heart.core.jev_decider import build_questions
+
+        true_branch = build_questions("")["should_reply"]["criteria"]["true"].lower()
+        assert "relevant contribution" in true_branch
+        assert "open topic" in true_branch
+        # 旧的窄判据：只认被点名/被提问
+        assert "the assistant is addressed or asked for something" not in true_branch
+
+    def test_should_reply_false_branch_is_not_a_catch_all(self):
+        """false 分支只覆盖「确实不该插话」，不能把所有闲聊都装进去。"""
+        from astrbot_plugin_angel_heart.core.jev_decider import build_questions
+
+        false_branch = build_questions("")["should_reply"]["criteria"]["false"].lower()
+        assert "chatter between other members" not in false_branch
+        assert "stay out of it" in false_branch
+
+    def test_is_interesting_is_not_a_three_condition_bar(self):
+        """旧判据要求同时满足角色契合、有用、时机合适，普通话题直接判死。"""
+        from astrbot_plugin_angel_heart.core.jev_decider import build_questions
+
+        instructions = build_questions("")["is_interesting"]["instructions"].lower()
+        assert "does it fit the assistant's role" not in instructions
+        assert "reasonable thing for a group member" in instructions
+
+
+class TestReplyBias:
+    """回复倾向偏置。"""
+
+    def test_bias_shifts_subjective_probabilities(self):
+        from astrbot_plugin_angel_heart.core.jev_decider import JevDecider
+
+        answers = {
+            "should_reply": {"type": "noul", "noul": 0.3},
+            "is_questioned": {"type": "noul", "noul": 0.1},
+            "is_interesting": {"type": "noul", "noul": 0.2},
+        }
+        plain = JevDecider._map_answers(answers)
+        biased = JevDecider._map_answers(answers, bias=0.2)
+        assert plain["probabilities"]["should_reply"] == 0.3
+        assert biased["probabilities"]["should_reply"] == 0.5
+        assert biased["probabilities"]["is_interesting"] == 0.4
+
+    def test_bias_does_not_touch_factual_question(self):
+        """是否被追问是事实判断，不该被倾向带偏。"""
+        from astrbot_plugin_angel_heart.core.jev_decider import JevDecider
+
+        answers = {
+            "should_reply": {"type": "noul", "noul": 0.3},
+            "is_questioned": {"type": "noul", "noul": 0.1},
+        }
+        biased = JevDecider._map_answers(answers, bias=0.5)
+        assert biased["probabilities"]["is_questioned"] == 0.1
+
+    def test_bias_is_clipped(self):
+        from astrbot_plugin_angel_heart.core.jev_decider import JevDecider
+
+        answers = {"should_reply": {"type": "noul", "noul": 0.9}}
+        assert JevDecider._map_answers(answers, bias=0.5)["probabilities"][
+            "should_reply"
+        ] == 1.0
+        assert JevDecider._map_answers(answers, bias=-0.5)["probabilities"][
+            "should_reply"
+        ] == 0.4
+
+    def test_threshold_applies_to_the_shifted_probability(self):
+        """偏置后的概率再走阈值判定。"""
+        from astrbot_plugin_angel_heart.core.jev_decider import build_decision
+
+        raw = {
+            "ok": True,
+            "probabilities": {
+                "should_reply": 0.55,
+                "is_questioned": 0.9,
+                "is_interesting": 0.8,
+            },
+            "reply_strategy": "answer_question",
+        }
+        cfg = {"reply_mode": "threshold", "reply_threshold": 0.6}
+        assert build_decision(raw, [make_msg("A", "你好")], cfg).should_reply is False
+
+        raw_biased = {
+            "ok": True,
+            "probabilities": {
+                "should_reply": 0.55 + 0.1,
+                "is_questioned": 0.9,
+                "is_interesting": 0.8,
+            },
+            "reply_strategy": "answer_question",
+        }
+        assert build_decision(raw_biased, [make_msg("A", "你好")], cfg).should_reply is True
+
+
+    @pytest.mark.asyncio
+    async def test_decide_applies_configured_bias(self):
+        """配置里的「回复倾向」要真的作用到判定结果上。"""
+        from astrbot_plugin_angel_heart.core.jev_decider import JevDecider
+
+        decider = JevDecider()
+        captured = {}
+
+        async def fake_evaluate(cfg, state, questions, idem=None):
+            captured["cfg"] = cfg
+            return {
+                "status": "ready",
+                "answers": {
+                    "should_reply": {"type": "noul", "noul": 0.45},
+                    "is_questioned": {"type": "noul", "noul": 0.9},
+                    "is_interesting": {"type": "noul", "noul": 0.9},
+                },
+            }
+
+        decider.client.evaluate = fake_evaluate
+        try:
+            raw = await decider.decide(
+                {
+                    "enabled": True,
+                    "proxy_url": "http://127.0.0.1:8770",
+                    "proxy_protocol": "systemone",
+                    "reply_mode": "threshold",
+                    "reply_threshold": 0.6,
+                    "reply_bias": 0.2,
+                },
+                [make_msg("A", "在吗")],
+            )
+        finally:
+            await decider.close()
+
+        assert raw["ok"] is True
+        # 0.45 + 0.2 = 0.65 >= 0.6
+        assert raw["probabilities"]["should_reply"] == 0.65

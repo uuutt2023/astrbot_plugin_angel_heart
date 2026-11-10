@@ -54,3 +54,11 @@ def test_air_reading_switch_exists():
     assert item["type"] == "bool"
     assert item["default"] is True
     assert item["hint"]
+
+
+def test_reply_bias_is_configurable():
+    """回复倾向可调，用来微调模型整体偏保守的程度。"""
+    item = JEV["reply_bias"]
+    assert item["type"] == "float"
+    assert item["default"] == 0.0
+    assert item["hint"]

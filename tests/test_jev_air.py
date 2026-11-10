@@ -112,7 +112,7 @@ class TestBuildAirContext:
         from astrbot_plugin_angel_heart.core.jev_air import build_air_context
 
         air = build_air_context([user_msg(), assistant_msg("我刚说过这句")], [])
-        assert "do not repeat" in air
+        assert "repeating them adds nothing" in air
         assert "我刚说过这句" in air
 
 
@@ -263,12 +263,15 @@ class TestDecideAirSwitch:
         assert "[Assistant's own earlier reply]" not in captured["state"]
 
     def test_default_instructions_carry_air_criteria(self):
-        """内置主判定题要带上读空气判据。"""
+        """内置主判定题要带上读空气判据，但不能只强调不回复。"""
         from astrbot_plugin_angel_heart.core.jev_decider import (
             DEFAULT_SHOULD_REPLY_INSTRUCTIONS,
         )
 
         lowered = DEFAULT_SHOULD_REPLY_INSTRUCTIONS.lower()
-        assert "aimed at other members" in lowered
-        assert "repeats what the assistant already said" in lowered
-        assert "replied several times in a row" in lowered
+        assert "meant for someone else" in lowered
+        assert "has already said the same thing" in lowered
+        assert "asked for less talking" in lowered
+        # 普通聊天也该算作开口的理由，不能只认「被点名」
+        assert "ordinary" in lowered
+        assert "a member of this group" in lowered

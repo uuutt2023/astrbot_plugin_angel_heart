@@ -14,15 +14,17 @@ from typing import Any, Dict, List, Optional
 
 from .jev_images import MODE_IGNORE
 
-# 明确表示「别再说了」的信号词
+# 明确表示「别再说了」的信号词。
+# 只收不容易误判的整句说法：「滚」「够了」这类单字在普通闲聊里太常见，
+# 误判一次就会把整轮判定压下去。
 REFUSAL_PATTERNS = (
     "别烦我",
     "不想聊",
-    "闭嘴",
-    "滚",
-    "走开",
+    "别聊了",
+    "闭嘴吧",
+    "滚开",
+    "走开吧",
     "烦死了",
-    "够了",
     "别说了",
     "别理我",
     "不要理我",
@@ -129,20 +131,11 @@ def _fatigue_note(rounds: int) -> str:
         if rounds >= threshold:
             level = name
     if level == "heavy":
-        return (
-            f"The assistant already replied {rounds} times in a row (heavy fatigue): "
-            "reply only if the message is clearly important or explicitly asks for help."
-        )
+        return f"The assistant already replied {rounds} times in a row (heavy fatigue)."
     if level == "moderate":
-        return (
-            f"The assistant already replied {rounds} times in a row (moderate fatigue): "
-            "be more selective and reply only to meaningful messages."
-        )
+        return f"The assistant already replied {rounds} times in a row (moderate fatigue)."
     if level == "light":
-        return (
-            f"The assistant already replied {rounds} time(s) in a row (light fatigue): "
-            "reply normally, but the topic may be winding down."
-        )
+        return f"The assistant already replied {rounds} time(s) in a row (light fatigue)."
     return ""
 
 
@@ -194,7 +187,7 @@ def build_air_context(
         lines.append(
             "The user recently signalled they want less talking ("
             + ", ".join(f'"{r}"' for r in refusals)
-            + "); do not push the conversation."
+            + ")."
         )
 
     replies = assistant_replies(recent_dialogue, historical_context)
@@ -204,7 +197,7 @@ def build_air_context(
         replies = [r for r in replies if r]
     if replies:
         lines.append(
-            "The assistant's own earlier replies (do not repeat them): "
+            "The assistant's own earlier replies (repeating them adds nothing): "
             + " | ".join(replies)
         )
 

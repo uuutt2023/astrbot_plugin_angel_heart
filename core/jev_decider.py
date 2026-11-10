@@ -108,16 +108,18 @@ def describe_failure(result: Dict[str, Any]) -> str:
 
 #: 主判定题的默认提示词。用户在配置里填了「Jev 提示词」就用用户的。
 DEFAULT_SHOULD_REPLY_INSTRUCTIONS = (
-    "Should the assistant reply in this group chat right now? "
+    "Should the assistant join in this group chat right now? "
     "Judge from the current message and the conversation context. "
-    "A reply is warranted when the current message is addressed to the "
-    "assistant, asks it something, or when the assistant can add real value "
-    "without interrupting. "
-    "Do not reply when the message is aimed at other members, is chatter "
-    "between them, is a sticker or emoji with nothing to add, repeats what "
-    "the assistant already said, or the user recently signalled they want "
-    "less talking. "
-    "When the assistant has already replied several times in a row, raise the bar."
+    "The assistant is a member of this group, not a helpdesk: ordinary "
+    "conversation is a valid reason to speak up when it has something to "
+    "add, not only when it is addressed directly. "
+    "Reply when the current message is addressed to the assistant, asks it "
+    "something, or the topic is open and the assistant can contribute "
+    "something of its own. "
+    "Stay quiet when the message is clearly meant for someone else, when it "
+    "is only a sticker or an emoji with nothing to add, when the assistant "
+    "has already said the same thing, or when the user has just asked for "
+    "less talking."
 )
 
 
@@ -136,12 +138,14 @@ def build_questions(prompt: str = "") -> Dict[str, Dict[str, Any]]:
             "instructions": instructions,
             "criteria": {
                 "true": (
-                    "A relevant, helpful reply to the current message is warranted: "
-                    "the assistant is addressed or asked for something."
+                    "The assistant can speak up usefully here: it is addressed, "
+                    "asked something, or has a relevant contribution to make to "
+                    "an open topic."
                 ),
                 "false": (
-                    "The message is chatter between other members, needs no reply, "
-                    "or interrupting would be intrusive."
+                    "The assistant should stay out of it: the message is meant "
+                    "for someone else, carries nothing to respond to, or the "
+                    "assistant would only repeat itself or interrupt."
                 ),
             },
         },
@@ -169,29 +173,29 @@ def build_questions(prompt: str = "") -> Dict[str, Dict[str, Any]]:
         "is_interesting": {
             "type": "noul",
             "instructions": (
-                "Is the current topic worth joining for the assistant - does it fit "
-                "the assistant's role, is there something useful to add, and is this "
-                "an appropriate moment to speak up? "
-                "Judge with the conversation context, and take the assistant's own "
-                "earlier replies and how often it has replied recently into account."
+                "Is this worth the assistant's attention - would taking part in "
+                "this topic be a reasonable thing for a group member to do? "
+                "Judge with the conversation context, and take the assistant's "
+                "own earlier replies and how often it has replied recently into "
+                "account."
             ),
             "criteria": {
                 "true": (
-                    "The topic fits the assistant's role and there is something "
-                    "useful to add right now."
+                    "Taking part in this topic would be a natural, reasonable "
+                    "thing for the assistant to do right now."
                 ),
                 "false": (
-                    "The topic does not fit the assistant's role, or speaking up "
-                    "would be redundant or intrusive."
+                    "Taking part would be redundant, out of place, or simply "
+                    "unnecessary right now."
                 ),
             },
         },
         "reply_strategy": {
             "type": "choice",
             "instructions": (
-                "What should the assistant do next? Pick exactly one option and "
-                "judge with the conversation context. Do not repeat what the "
-                "assistant already said."
+                "How should the assistant take part? Pick exactly one option and "
+                "judge with the conversation context. Choose stay_silent only "
+                "when there is genuinely nothing to say."
             ),
             "criteria": {
                 "answer_question": "Answer the question that was asked, directly and helpfully.",
@@ -407,7 +411,9 @@ class JevDecider:
             except (asyncio.TimeoutError, TimeoutError):
                 return {"ok": False, "error": "Jev 本轮总预算超时"}
             if result.get("status") == "ready":
-                return self._map_answers(result.get("answers") or {})
+                return self._map_answers(
+                    result.get("answers") or {}, bias=_float(cfg.get("reply_bias"), 0.0)
+                )
             if not result.get("retryable"):
                 break
             if attempt >= retries:
@@ -425,8 +431,12 @@ class JevDecider:
         return {"ok": False, "error": describe_failure(result)}
 
     @staticmethod
-    def _map_answers(answers: Dict[str, Any]) -> Dict[str, Any]:
-        """把 Jev 的答案映射成决策原料（阈值判定由调用方按配置执行）。"""
+    def _map_answers(answers: Dict[str, Any], bias: float = 0.0) -> Dict[str, Any]:
+        """把 Jev 的答案映射成决策原料（阈值判定由调用方按配置执行）。
+
+        bias 是「回复倾向」偏置：加在主观判断（接话、值不值得参与）上，
+        不动事实判断（是否被追问）。正数＝更爱接话，负数＝更谨慎。
+        """
         reply_node = answers.get("should_reply")
         questioned_node = answers.get("is_questioned")
         interesting_node = answers.get("is_interesting")
@@ -437,9 +447,9 @@ class JevDecider:
         return {
             "ok": True,
             "probabilities": {
-                "should_reply": probability(reply_node),
+                "should_reply": _biased(probability(reply_node), bias),
                 "is_questioned": probability(questioned_node),
-                "is_interesting": probability(interesting_node),
+                "is_interesting": _biased(probability(interesting_node), bias),
             },
             "reply_strategy": choice,
         }
@@ -459,6 +469,13 @@ def _float(value: Any, default: float) -> float:
         return float(value)
     except (TypeError, ValueError):
         return default
+
+
+def _biased(probability: Optional[float], bias: float) -> Optional[float]:
+    """给概率加偏置，裁剪回 [0, 1]。"""
+    if probability is None:
+        return None
+    return max(0.0, min(1.0, probability + bias))
 
 
 def build_decision(
@@ -492,8 +509,12 @@ def build_decision(
 
     strategy_key = str(raw.get("reply_strategy") or "")
     strategy = STRATEGY_LABELS.get(strategy_key, "继续观察")
-    if strategy_key == "stay_silent":
-        should_reply = False
+    if strategy_key == "stay_silent" and should_reply:
+        # 策略只决定「怎么回」，不否决「回不回」——否则两路答案会互相打架，
+        # 保守的策略选择会把本该接的话直接按掉。
+        logger.info(
+            f"AngelHeart[Jev]: should_reply=true 但策略选了保持沉默，按接话处理"
+        )
 
     decision = SecretaryDecision(
         should_reply=should_reply,

@@ -329,6 +329,12 @@
         ],
         "default": "systemone"
       },
+      "reply_bias": {
+        "type": "float",
+        "description": "回复倾向",
+        "hint": "加在 Jev 给出的接话概率上：正数＝更爱接话，负数＝更谨慎。0 ＝用模型原始判断。",
+        "default": 0.0
+      },
       "reply_mode": {
         "type": "string",
         "description": "概率判定方式",
